@@ -434,6 +434,10 @@ class LabelingWidget(LabelDialog):
             ),
         )
         self.canvas.zoom_request.connect(self.zoom_request)
+        self.canvas.pinch_zoom_request.connect(self.pinch_zoom_request)
+        # Unrounded zoom level carried across pinch events, so many small gesture deltas don't get swallowed by the integer zoom spinbox.
+        self._pinch_zoom_value = None
+        self._pinch_anchor = None
 
         # Compare view support
         self.compare_view_manager = CompareViewManager(self.canvas, self)
@@ -5923,27 +5927,55 @@ class LabelingWidget(LabelDialog):
         self.set_zoom(zoom_value)
 
     def zoom_request(self, delta, pos):
-        canvas_width_old = self.canvas.width()
+        anchor = self._zoom_anchor(pos)
         units = 1.1
         if delta < 0:
             units = 0.9
         self.add_zoom(units)
+        self._restore_zoom_anchor(anchor)
 
-        canvas_width_new = self.canvas.width()
-        if canvas_width_old != canvas_width_new:
-            canvas_scale_factor = canvas_width_new / canvas_width_old
+    def pinch_zoom_request(self, factor, pos):
+        current = self.zoom_widget.value()
+        base = self._pinch_zoom_value
+        # Resync if the zoom changed elsewhere (wheel, fit, clamping, ...).
+        if base is None or round(base) != current:
+            base = float(current)
+            self._pinch_anchor = None
+        # Keep one anchor for the whole pinch so per-event pixel rounding can't accumulate into drift.
+        anchor = self._zoom_anchor(pos)
+        if self._pinch_anchor is None or self._pinch_anchor_stale(anchor):
+            self._pinch_anchor = anchor
+        self._pinch_zoom_value = base * factor
 
-            x_shift = round(pos.x() * canvas_scale_factor - pos.x())
-            y_shift = round(pos.y() * canvas_scale_factor - pos.y())
+        self.set_zoom(round(self._pinch_zoom_value))
+        self._restore_zoom_anchor(self._pinch_anchor)
 
-            self.set_scroll(
-                Qt.Orientation.Horizontal,
-                self.scroll_bars[Qt.Orientation.Horizontal].value() + x_shift,
-            )
-            self.set_scroll(
-                Qt.Orientation.Vertical,
-                self.scroll_bars[Qt.Orientation.Vertical].value() + y_shift,
-            )
+    def _pinch_anchor_stale(self, anchor):
+        """True once the cursor moved, or the image was panned out from under it"""
+        if self._pinch_anchor[1] != anchor[1]:
+            return True
+        drift = (self._pinch_anchor[0] - anchor[0]) * self.canvas.scale
+        return abs(drift.x()) > 1 or abs(drift.y()) > 1
+
+    def _zoom_anchor(self, pos):
+        """Image point under canvas position `pos`, and where it sits in the viewport"""
+        pos = QtCore.QPointF(pos)
+        return self.canvas.transform_pos(pos), pos + QtCore.QPointF(
+            self.canvas.pos()
+        )
+
+    def _restore_zoom_anchor(self, anchor):
+        """Scroll so the anchored image point is back under the cursor after zooming"""
+        image_pos, viewport_pos = anchor
+        canvas_pos = (
+            image_pos + self.canvas.offset_to_center()
+        ) * self.canvas.scale
+        self.set_scroll(
+            Qt.Orientation.Horizontal, canvas_pos.x() - viewport_pos.x()
+        )
+        self.set_scroll(
+            Qt.Orientation.Vertical, canvas_pos.y() - viewport_pos.y()
+        )
 
     def set_fit_window(self, value=True):
         if value:

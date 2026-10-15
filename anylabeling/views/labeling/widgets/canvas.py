@@ -57,6 +57,7 @@ class Canvas(
     """Canvas widget to handle label drawing"""
 
     zoom_request = QtCore.pyqtSignal(int, QtCore.QPoint)
+    pinch_zoom_request = QtCore.pyqtSignal(float, QtCore.QPoint)
     scroll_request = QtCore.pyqtSignal(float, object, int)
     # [Feature] support for automatically switching to editing mode
     # when the cursor moves over an object
@@ -145,6 +146,7 @@ class Canvas(
         self.prev_point = QtCore.QPointF()
         self.prev_pan_point = QtCore.QPointF()
         self.prev_move_point = QtCore.QPointF()
+        self._hover_refresh_pending = False
         self._space_pressed = False
         self._space_panning = False
         self._space_pan_prev_point = None
@@ -268,6 +270,12 @@ class Canvas(
         self._prev_brush_pos = None
         # shape -> (mask_version, outline_path)
         self._brush_overlay_cache = {}
+        # shape -> (mask_version, pixmap_key, on_light) for the outline's black/white pick
+        self._brush_outline_contrast = {}
+        # Whether the brush ring currently sits on a light background (picks a black ring)
+        self._brush_cursor_on_light = False
+        # (pixmap cacheKey, grayscale array) used to pick black/white overlays
+        self._contrast_luma_cache = None
         self._brush_modified = False
         # Mask -> polygon simplification tolerance, in image pixels.
         self.brush_simplify_epsilon_px = float(
@@ -1019,6 +1027,7 @@ class Canvas(
         if shape is None:
             return
         self._brush_overlay_cache.pop(shape, None)
+        self._brush_outline_contrast.pop(shape, None)
 
     def _bump_brush_version(self, shape: Shape) -> None:
         """Advance a shape's mask version and invalidate its cache.
@@ -1426,6 +1435,72 @@ class Canvas(
             utils.distance_to_line(start, [self.current[-1], pos]) < threshold
         )
 
+    # Luminance hysteresis for black/white overlay picks, so they don't flicker on mid-grey.
+    CONTRAST_TO_BLACK = 0.6
+    CONTRAST_TO_WHITE = 0.4
+
+    def _contrast_luma(self) -> np.ndarray | None:
+        """Return a cached grayscale view of the current pixmap."""
+        if self.pixmap is None or self.pixmap.isNull():
+            return None
+        key = self.pixmap.cacheKey()
+        if (
+            self._contrast_luma_cache is None
+            or self._contrast_luma_cache[0] != key
+        ):
+            image = self.pixmap.toImage().convertToFormat(
+                QtGui.QImage.Format.Format_Grayscale8
+            )
+            height, width = image.height(), image.width()
+            ptr = image.bits()
+            ptr.setsize(image.sizeInBytes())
+            rows = np.frombuffer(ptr, dtype=np.uint8).reshape(
+                height, image.bytesPerLine()
+            )
+            self._contrast_luma_cache = (key, rows[:, :width].copy())
+        return self._contrast_luma_cache[1]
+
+    def _sample_on_light(
+        self, xs: np.ndarray, ys: np.ndarray, on_light: bool
+    ) -> bool:
+        """Whether the image under the given image-space points is light, with hysteresis around `on_light`."""
+        luma = self._contrast_luma()
+        if luma is None or len(xs) == 0:
+            return on_light
+        height, width = luma.shape
+        xs = np.clip(np.round(xs).astype(np.int64), 0, width - 1)
+        ys = np.clip(np.round(ys).astype(np.int64), 0, height - 1)
+        mean = float(luma[ys, xs].mean()) / 255.0
+        if on_light:
+            return mean > self.CONTRAST_TO_WHITE
+        return mean > self.CONTRAST_TO_BLACK
+
+    def _brush_outline_on_light(
+        self, shape: Shape, outline_path: QtGui.QPainterPath
+    ) -> bool:
+        """Black/white pick for a brush-edited outline, re-sampled only when the mask or image changes."""
+        version = int(getattr(shape, "_brush_mask_version", 0))
+        key = self.pixmap.cacheKey() if self.pixmap is not None else None
+        cached = self._brush_outline_contrast.get(shape)
+        if cached and cached[0] == version and cached[1] == key:
+            return cached[2]
+        points = [
+            (point.x(), point.y())
+            for polygon in outline_path.toSubpathPolygons()
+            for point in polygon
+        ]
+        previous = cached[2] if cached else False
+        if points:
+            # Contour vertices sit right on the outline; cap the count so huge masks stay cheap.
+            xy = np.asarray(points, dtype=np.float64)[
+                :: max(1, len(points) // 2048)
+            ]
+            on_light = self._sample_on_light(xy[:, 0], xy[:, 1], previous)
+        else:
+            on_light = previous
+        self._brush_outline_contrast[shape] = (version, key, on_light)
+        return on_light
+
     def _paint_brush_overlays(self, p: QtGui.QPainter) -> None:
         """Paint live mask overlays for shapes being brush-edited.
 
@@ -1444,7 +1519,12 @@ class Canvas(
                     if shape.selected
                     else shape.line_color
                 )
-                pen = QtGui.QPen(outline_color)
+                pen_color = (
+                    QtGui.QColor(0, 0, 0)
+                    if self._brush_outline_on_light(shape, outline_path)
+                    else QtGui.QColor(255, 255, 255)
+                )
+                pen = QtGui.QPen(pen_color)
                 pen.setWidthF(float(shape.line_width))
                 pen.setCosmetic(True)
                 if getattr(shape, "difficult", False):
@@ -1458,8 +1538,7 @@ class Canvas(
     def _paint_brush_cursor(self, p: QtGui.QPainter) -> None:
         """Draw the circular brush-size preview at the cursor.
 
-        The circle is white while adding and red while erasing so the
-        active modifier is obvious at a glance.
+        The circle is red while erasing so the active modifier is obvious at a glance. While adding it is white or black, whichever contrasts with the image under the ring.
 
         Args:
             p: The active painter, already translated/scaled to image space.
@@ -1468,15 +1547,23 @@ class Canvas(
             return
         r = max(1.0, float(self.brush_radius))
         p.setOpacity(1.0)
+        center = QtCore.QPointF(self.prev_move_point)
         if self.eraser_mode:
             pen_color = QtGui.QColor(255, 100, 100, 255)
             fill_color = QtGui.QColor(255, 100, 100, 50)
         else:
-            pen_color = QtGui.QColor(255, 255, 255, 255)
-            fill_color = QtGui.QColor(255, 255, 255, 50)
+            angles = np.linspace(0.0, 2.0 * np.pi, 48, endpoint=False)
+            self._brush_cursor_on_light = self._sample_on_light(
+                center.x() + r * np.cos(angles),
+                center.y() + r * np.sin(angles),
+                self._brush_cursor_on_light,
+            )
+            value = 0 if self._brush_cursor_on_light else 255
+            pen_color = QtGui.QColor(value, value, value, 255)
+            fill_color = QtGui.QColor(value, value, value, 50)
         p.setPen(QtGui.QPen(pen_color, 2))
         p.setBrush(fill_color)
-        p.drawEllipse(QtCore.QPointF(self.prev_move_point), r, r)
+        p.drawEllipse(center, r, r)
 
     def _paint_magic_wand_overlay(self, p: QtGui.QPainter) -> None:
         """Draw the live magic wand selection above the image."""
@@ -5000,6 +5087,55 @@ class Canvas(
         if self.pixmap:
             return self.scale * self.pixmap.size()
         return super().minimumSizeHint()
+
+    # QT Overload
+    def event(self, ev):
+        """Handle native trackpad gestures (macOS pinch-to-zoom)"""
+        if ev.type() == QtCore.QEvent.Type.NativeGesture:
+            if ev.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+                # The gesture's own position() is unreliable on macOS; a pinch never moves the pointer, so anchor on the real cursor.
+                self.pinch_zoom_request.emit(
+                    1.0 + ev.value(), self.mapFromGlobal(QtGui.QCursor.pos())
+                )
+            ev.accept()
+            return True
+        return super().event(ev)
+
+    # QT Overload
+    def moveEvent(self, ev):
+        super().moveEvent(ev)
+        self._schedule_hover_refresh()
+
+    # QT Overload
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._schedule_hover_refresh()
+
+    def _schedule_hover_refresh(self):
+        """Coalesce scroll/zoom geometry changes into one hover refresh"""
+        if not self._hover_refresh_pending:
+            self._hover_refresh_pending = True
+            QTimer.singleShot(0, self._refresh_hover_at_cursor)
+
+    def _refresh_hover_at_cursor(self):
+        """Replay a mouse move so the crosshair and hover state follow the image when it moves under a stationary cursor (trackpad pan/zoom)"""
+        self._hover_refresh_pending = False
+        # A held button means a drag/space-pan is in progress; a replayed move would feed back into it.
+        if QtWidgets.QApplication.mouseButtons() != Qt.MouseButton.NoButton:
+            return
+        if not self.underMouse():
+            return
+        global_pos = QtCore.QPointF(QtGui.QCursor.pos())
+        self.mouseMoveEvent(
+            QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseMove,
+                QtCore.QPointF(self.mapFromGlobal(global_pos.toPoint())),
+                global_pos,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.NoButton,
+                QtWidgets.QApplication.keyboardModifiers(),
+            )
+        )
 
     # QT Overload
     def wheelEvent(self, ev: QWheelEvent):
