@@ -942,6 +942,32 @@ class LabelingWidget(LabelDialog):
             checkable=True,
             checked=False,
         )
+        edit_by_rectangle_mode = action(
+            self.tr("Edit by Rectangle"),
+            lambda checked: self.toggle_brush_mode(checked, "rectangle"),
+            shortcuts.get("edit_by_rectangle", "Shift+R"),
+            "rectangle",
+            self.tr(
+                "Select one polygon, then drag or click out rectangles to "
+                "add, hold Ctrl to cut them out"
+            ),
+            enabled=False,
+            checkable=True,
+            checked=False,
+        )
+        edit_by_polygon_mode = action(
+            self.tr("Edit by Polygon"),
+            lambda checked: self.toggle_brush_mode(checked, "polygon"),
+            shortcuts.get("edit_by_polygon", "Shift+O"),
+            "polygon",
+            self.tr(
+                "Select one polygon, then click out polygons to add, hold "
+                "Ctrl when closing to cut them out"
+            ),
+            enabled=False,
+            checkable=True,
+            checked=False,
+        )
         group_selected_shapes = action(
             self.tr("Group Selected Shapes"),
             self.group_selected_shapes,
@@ -1845,6 +1871,8 @@ class LabelingWidget(LabelDialog):
             create_magic_wand_mode=create_magic_wand_mode,
             edit_mode=edit_mode,
             edit_brush_mode=edit_brush_mode,
+            edit_by_rectangle_mode=edit_by_rectangle_mode,
+            edit_by_polygon_mode=edit_by_polygon_mode,
             create_rectangle_mode=create_rectangle_mode,
             create_cuboid_mode=create_cuboid_mode,
             create_rotation_mode=create_rotation_mode,
@@ -1986,6 +2014,8 @@ class LabelingWidget(LabelDialog):
                 None,
                 edit_mode,
                 edit_brush_mode,
+                edit_by_rectangle_mode,
+                edit_by_polygon_mode,
                 edit,
                 toggle_shape_lock,
                 None,
@@ -2281,6 +2311,8 @@ class LabelingWidget(LabelDialog):
             self.actions.create_line_strip_mode,
             None,
             edit_brush_mode,
+            edit_by_rectangle_mode,
+            edit_by_polygon_mode,
             edit_mode,
             delete,
             undo,
@@ -3089,6 +3121,8 @@ class LabelingWidget(LabelDialog):
             None,
             self.actions.edit_mode,
             self.actions.edit_brush_mode,
+            self.actions.edit_by_rectangle_mode,
+            self.actions.edit_by_polygon_mode,
         )
         utils.add_actions(self.menus.edit, actions + self.actions.editMenu)
 
@@ -3221,6 +3255,8 @@ class LabelingWidget(LabelDialog):
             action.setEnabled(value)
         if not value:
             self.actions.edit_brush_mode.setEnabled(False)
+            self.actions.edit_by_rectangle_mode.setEnabled(False)
+            self.actions.edit_by_polygon_mode.setEnabled(False)
 
         if value and self.file_list_widget.count() > 0:
             self.actions.shape_manager.setEnabled(True)
@@ -3881,8 +3917,8 @@ class LabelingWidget(LabelDialog):
         if not preserve_brush_mode:
             if getattr(self.canvas, "is_brush_mode", False):
                 self.canvas.cancel_brush_mode()
-            elif self.actions.edit_brush_mode.isChecked():
-                self.actions.edit_brush_mode.setChecked(False)
+            else:
+                self._uncheck_brush_tool_actions()
         self.canvas.set_magic_wand_mode(False)
         # Disable auto labeling if needed
         if (
@@ -3985,23 +4021,41 @@ class LabelingWidget(LabelDialog):
         self.set_text_editing(True)
         self.update_labeling_instruction()
 
-    def toggle_brush_mode(self, checked: bool) -> None:
-        """Enable or disable brush editing for a polygon.
+    def _brush_tool_actions(self) -> dict:
+        """Map each mask edit tool to its toggle action."""
+        return {
+            "brush": self.actions.edit_brush_mode,
+            "rectangle": self.actions.edit_by_rectangle_mode,
+            "polygon": self.actions.edit_by_polygon_mode,
+        }
+
+    def _uncheck_brush_tool_actions(self) -> None:
+        for tool_action in self._brush_tool_actions().values():
+            tool_action.setChecked(False)
+
+    def toggle_brush_mode(self, checked: bool, tool: str = "brush") -> None:
+        """Enable or disable mask editing for a polygon.
 
         Enabling requires exactly one selected polygon and switches the
-        canvas to edit mode before brush editing starts.
+        canvas to edit mode before brush editing starts. Picking another
+        tool while editing switches tools and keeps the edit going.
 
         Args:
             checked: ``True`` when the toolbar toggle is switched on.
+            tool: ``"brush"``, ``"rectangle"`` or ``"polygon"``.
         """
         if checked:
+            if getattr(self.canvas, "is_brush_mode", False):
+                self.canvas.set_brush_tool(tool)
+                self.update_labeling_instruction()
+                return
             selected_shapes = self.canvas.selected_shapes
             if (
                 len(selected_shapes) != 1
                 or selected_shapes[0].shape_type != "polygon"
                 or selected_shapes[0].locked
             ):
-                self.actions.edit_brush_mode.setChecked(False)
+                self._brush_tool_actions()[tool].setChecked(False)
                 return
             if self.canvas.current is not None:
                 self.canvas.current = None
@@ -4010,7 +4064,7 @@ class LabelingWidget(LabelDialog):
                 self.canvas.update()
             self.toggle_draw_mode(True, preserve_brush_mode=True)
             self.set_text_editing(True)
-            self.canvas.set_brush_mode(True)
+            self.canvas.set_brush_mode(True, tool)
             self.update_labeling_instruction()
             return
 
@@ -4019,8 +4073,10 @@ class LabelingWidget(LabelDialog):
         self.update_labeling_instruction()
 
     def on_brush_mode_changed(self, enabled: bool) -> None:
-        """Synchronize brush action and lock the active shape selection."""
-        self.actions.edit_brush_mode.setChecked(enabled)
+        """Synchronize the edit tool actions and lock the active shape selection."""
+        active = self.canvas.brush_tool if enabled else None
+        for tool, tool_action in self._brush_tool_actions().items():
+            tool_action.setChecked(tool == active)
         self.label_list.setEnabled(not enabled)
 
     def update_file_menu(self):
@@ -5058,6 +5114,8 @@ class LabelingWidget(LabelDialog):
             and not selected_shapes[0].locked
         )
         self.actions.edit_brush_mode.setEnabled(can_brush_edit)
+        self.actions.edit_by_rectangle_mode.setEnabled(can_brush_edit)
+        self.actions.edit_by_polygon_mode.setEnabled(can_brush_edit)
         self.actions.union_selection.setEnabled(
             not has_locked
             and not all(value > 0 for value in allow_merge_shape_type.values())
@@ -6354,8 +6412,8 @@ class LabelingWidget(LabelDialog):
                 return
             if getattr(self.canvas, "is_brush_mode", False):
                 self.canvas.cancel_brush_mode()
-            elif self.actions.edit_brush_mode.isChecked():
-                self.actions.edit_brush_mode.setChecked(False)
+            else:
+                self._uncheck_brush_tool_actions()
             event.accept()
             return
         super(LabelingWidget, self).keyPressEvent(event)
@@ -6923,6 +6981,8 @@ class LabelingWidget(LabelDialog):
             self.update_navigator_shapes()
 
     def remove_selected_point(self):
+        if self.canvas.brush_remove_last_region_point():
+            return
         self.canvas.remove_selected_point()
         self.canvas.update()
         if self.canvas.h_shape is not None and not self.canvas.h_shape.points:

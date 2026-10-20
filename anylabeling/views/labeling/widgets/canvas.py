@@ -265,6 +265,10 @@ class Canvas(
         self.is_brush_mode = False
         self.brush_radius = 12  # in image pixels
         self.eraser_mode = False  # True while Ctrl is held
+        # Active edit tool: "brush", "rectangle" or "polygon". The region
+        # tools fill (or with Ctrl, cut) a drawn shape into the same mask.
+        self.brush_tool = "brush"
+        self._region_points = []
         self._brush_target_shape = None
         self._brush_original_shape = None
         self._prev_brush_pos = None
@@ -1092,6 +1096,8 @@ class Canvas(
         self._prev_brush_pos = None
         self._brush_target_shape = None
         self.eraser_mode = False
+        self.brush_tool = "brush"
+        self._region_points = []
 
         if target is not None and getattr(target, "mask", None) is not None:
             if self._brush_baseline_mask is not None and np.array_equal(
@@ -1138,7 +1144,32 @@ class Canvas(
         else:
             self.brush_mode_changed.emit(False)
 
-    def set_brush_mode(self, enabled: bool) -> None:
+    def _brush_tool_cursor(self):
+        """Return the cursor for the active edit tool."""
+        if self.brush_tool == "brush":
+            return QtCore.Qt.CursorShape.BlankCursor
+        return CURSOR_DRAW
+
+    def set_brush_tool(self, tool: str) -> None:
+        """Switch the edit tool while staying in brush-edit mode.
+
+        The mask, undo history and target shape are kept; only a pending
+        rectangle or polygon is dropped.
+
+        Args:
+            tool: ``"brush"``, ``"rectangle"`` or ``"polygon"``.
+        """
+        if tool not in ("brush", "rectangle", "polygon"):
+            return
+        self.brush_tool = tool
+        self._region_points = []
+        self._prev_brush_pos = None
+        if self.is_brush_mode:
+            self.override_cursor(self._brush_tool_cursor())
+            self.brush_mode_changed.emit(True)
+        self.update()
+
+    def set_brush_mode(self, enabled: bool, tool: str = "brush") -> None:
         """Enter or leave brush-edit mode for the selected shape.
 
         On enter the single selected shape (brush editing requires exactly
@@ -1149,7 +1180,11 @@ class Canvas(
 
         Args:
             enabled: ``True`` to enter brush mode, ``False`` to leave it.
+            tool: Edit tool to use on enter: ``"brush"`` paints circles, ``"rectangle"`` and ``"polygon"`` fill drawn regions. Ctrl subtracts with any of them. Entering while already in brush mode only switches the tool.
         """
+        if enabled and self.is_brush_mode:
+            self.set_brush_tool(tool)
+            return
         if enabled:
             if (
                 len(self.selected_shapes) != 1
@@ -1160,8 +1195,12 @@ class Canvas(
                 return
             self.set_editing(True)
             self.is_brush_mode = True
+            self.brush_tool = (
+                tool if tool in ("brush", "rectangle", "polygon") else "brush"
+            )
+            self._region_points = []
             self._brush_modified = False
-            self.override_cursor(QtCore.Qt.CursorShape.BlankCursor)
+            self.override_cursor(self._brush_tool_cursor())
             self._brush_target_shape = (
                 self.selected_shapes[0]
                 if len(self.selected_shapes) == 1
@@ -1274,6 +1313,107 @@ class Canvas(
         self._restore_brush_mask(nxt)
         self.brush_history_changed.emit(self.brush_can_undo())
 
+    def _rectangle_region(
+        self, p1: QtCore.QPointF, p2: QtCore.QPointF
+    ) -> list:
+        """Return the four corners of the rectangle spanned by two points."""
+        return [
+            QtCore.QPointF(p1.x(), p1.y()),
+            QtCore.QPointF(p2.x(), p1.y()),
+            QtCore.QPointF(p2.x(), p2.y()),
+            QtCore.QPointF(p1.x(), p2.y()),
+        ]
+
+    def _apply_region_to_target(self, points: list, subtract: bool) -> None:
+        """Fill or cut a drawn region into the target mask as one stroke.
+
+        Like a brush stroke, the mask is converted back to its largest component and the result becomes a single undo step.
+
+        Args:
+            points: Region vertices in image coordinates.
+            subtract: Cut the region out instead of adding it.
+        """
+        self._region_points = []
+        target = self._brush_target_shape
+        if target is None or len(points) < 3:
+            self.update()
+            return
+        self._ensure_brush_mask(target)
+        pts = np.array(
+            [(int(round(p.x())), int(round(p.y()))) for p in points],
+            dtype=np.int32,
+        ).reshape((-1, 1, 2))
+        cv2.fillPoly(target.mask, [pts], 0 if subtract else 255)
+        self._brush_modified = True
+        self._bump_brush_version(target)
+        self._update_shape_points_from_mask(target)
+        self._push_brush_undo_state()
+        self.update()
+
+    def _close_region_polygon(self, subtract: bool) -> bool:
+        """Apply the pending polygon if it has enough vertices."""
+        if self.brush_tool != "polygon" or len(self._region_points) < 3:
+            return False
+        self._apply_region_to_target(list(self._region_points), subtract)
+        return True
+
+    def brush_remove_last_region_point(self) -> bool:
+        """Drop the newest vertex of a pending edit polygon."""
+        if not self.is_brush_mode or not self._region_points:
+            return False
+        self._region_points.pop()
+        self.update()
+        return True
+
+    def _region_mouse_press(self, ev, pos: QtCore.QPointF) -> None:
+        """Handle a left press for the rectangle and polygon edit tools.
+
+        A rectangle is dragged out (press, drag, release) or clicked out (two clicks). A polygon takes one click per vertex and closes on its first vertex, a double click or Enter. Holding Ctrl when the region completes cuts it out of the mask.
+        """
+        subtract = bool(
+            ev.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+        )
+        self.eraser_mode = subtract
+        if self.brush_tool == "rectangle":
+            if self._region_points:
+                anchor = self._region_points[0]
+                self._apply_region_to_target(
+                    self._rectangle_region(anchor, pos), subtract
+                )
+            else:
+                self._region_points = [QtCore.QPointF(pos)]
+            self.update()
+            return
+        if len(self._region_points) >= 3 and self.close_enough(
+            pos, self._region_points[0]
+        ):
+            self._close_region_polygon(subtract)
+            return
+        self._region_points.append(QtCore.QPointF(pos))
+        self.update()
+
+    def _region_mouse_release(self, ev, pos: QtCore.QPointF) -> None:
+        """Finish a dragged rectangle; short clicks wait for a second one."""
+        if self.brush_tool != "rectangle" or len(self._region_points) != 1:
+            return
+        anchor = self._region_points[0]
+        threshold = self.epsilon / max(self.scale, 1e-6)
+        if (
+            abs(pos.x() - anchor.x()) < threshold
+            and abs(pos.y() - anchor.y()) < threshold
+        ):
+            return
+        self._apply_region_to_target(
+            self._rectangle_region(anchor, pos),
+            bool(ev.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier),
+        )
+
+    def _brush_mouse_double_click(self, ev) -> None:
+        """Close a pending edit polygon on double click."""
+        self._close_region_polygon(
+            bool(ev.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier)
+        )
+
     def _brush_mouse_press(self, ev, pos: QtCore.QPointF) -> bool:
         """Handle a mouse press while brush mode is active.
 
@@ -1295,6 +1435,9 @@ class Canvas(
             and self.editing()
             and self._brush_target_shape is not None
         ):
+            if self.brush_tool != "brush":
+                self._region_mouse_press(ev, pos)
+                return True
             self._ensure_brush_mask(self._brush_target_shape)
             self.eraser_mode = bool(
                 ev.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
@@ -1332,6 +1475,9 @@ class Canvas(
         self.eraser_mode = bool(
             ev.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
         )
+        if self.brush_tool != "brush":
+            self.update()
+            return True
         target = self._brush_target_shape
         if (
             QtCore.Qt.MouseButton.LeftButton & ev.buttons()
@@ -1377,7 +1523,21 @@ class Canvas(
             ``True`` if the event was consumed by brush mode.
         """
         if ev.button() == QtCore.Qt.MouseButton.RightButton:
+            # A pending polygon is applied before committing, so a right
+            # click finishes the last region and the edit in one go.
+            self._close_region_polygon(
+                bool(
+                    ev.modifiers()
+                    & QtCore.Qt.KeyboardModifier.ControlModifier
+                )
+            )
             self.set_brush_mode(False)
+            return True
+        if (
+            ev.button() == QtCore.Qt.MouseButton.LeftButton
+            and self.brush_tool != "brush"
+        ):
+            self._region_mouse_release(ev, self.transform_pos(ev.position()))
             return True
         if (
             ev.button() == QtCore.Qt.MouseButton.LeftButton
@@ -1407,10 +1567,27 @@ class Canvas(
         modifiers = ev.modifiers()
         key = ev.key()
         if key == QtCore.Qt.Key.Key_Escape:
-            self.cancel_brush_mode()
+            # Esc first drops a pending region, then discards the edit.
+            if self._region_points:
+                self._region_points = []
+                self.update()
+            else:
+                self.cancel_brush_mode()
             ev.accept()
             return True
         ctrl = bool(modifiers & QtCore.Qt.KeyboardModifier.ControlModifier)
+        if key == QtCore.Qt.Key.Key_Control:
+            self.eraser_mode = True
+            self.update()
+            return False
+        if key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+            if self._close_region_polygon(ctrl):
+                ev.accept()
+                return True
+        if key == QtCore.Qt.Key.Key_Backspace:
+            if self.brush_remove_last_region_point():
+                ev.accept()
+                return True
         shift = bool(modifiers & QtCore.Qt.KeyboardModifier.ShiftModifier)
         if ctrl and key == QtCore.Qt.Key.Key_Z:
             if shift:
@@ -1545,6 +1722,9 @@ class Canvas(
         """
         if not self.is_brush_mode:
             return
+        if self.brush_tool != "brush":
+            self._paint_region_preview(p)
+            return
         r = max(1.0, float(self.brush_radius))
         p.setOpacity(1.0)
         center = QtCore.QPointF(self.prev_move_point)
@@ -1564,6 +1744,49 @@ class Canvas(
         p.setPen(QtGui.QPen(pen_color, 2))
         p.setBrush(fill_color)
         p.drawEllipse(center, r, r)
+
+    def _paint_region_preview(self, p: QtGui.QPainter) -> None:
+        """Draw the pending rectangle or polygon of the region edit tools.
+
+        Red means the region will be cut out (Ctrl held), matching the brush ring; otherwise the outline contrasts with the image.
+        """
+        if not self._region_points:
+            return
+        cursor = QtCore.QPointF(self.prev_move_point)
+        if self.brush_tool == "rectangle":
+            points = self._rectangle_region(self._region_points[0], cursor)
+        else:
+            points = list(self._region_points) + [cursor]
+        if self.eraser_mode:
+            pen_color = QtGui.QColor(255, 100, 100, 255)
+            fill_color = QtGui.QColor(255, 100, 100, 60)
+        else:
+            self._brush_cursor_on_light = self._sample_on_light(
+                np.array([pt.x() for pt in points]),
+                np.array([pt.y() for pt in points]),
+                self._brush_cursor_on_light,
+            )
+            value = 0 if self._brush_cursor_on_light else 255
+            pen_color = QtGui.QColor(value, value, value, 255)
+            fill_color = QtGui.QColor(value, value, value, 60)
+        scale = max(self.scale, 1e-6)
+        p.save()
+        p.setOpacity(1.0)
+        p.setPen(QtGui.QPen(pen_color, 2.0 / scale))
+        p.setBrush(fill_color)
+        p.drawPolygon(QtGui.QPolygonF(points))
+        if self.brush_tool == "polygon":
+            r = 3.0 / scale
+            p.setBrush(pen_color)
+            for pt in self._region_points:
+                p.drawEllipse(pt, r, r)
+            first = self._region_points[0]
+            if len(self._region_points) >= 3 and self.close_enough(
+                cursor, first
+            ):
+                p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                p.drawEllipse(first, 2.5 * r, 2.5 * r)
+        p.restore()
 
     def _paint_magic_wand_overlay(self, p: QtGui.QPainter) -> None:
         """Draw the live magic wand selection above the image."""
@@ -3049,6 +3272,11 @@ class Canvas(
             or self._space_panning
             or self._space_pan_suppress_until_release
         ):
+            ev.accept()
+            return
+
+        if self.is_brush_mode:
+            self._brush_mouse_double_click(ev)
             ev.accept()
             return
 
@@ -5143,7 +5371,7 @@ class Canvas(
         mods = ev.modifiers()
         delta = ev.angleDelta()
 
-        if self.is_brush_mode:
+        if self.is_brush_mode and self.brush_tool == "brush":
             # Resize the brush instead of zooming/scrolling.
             if delta.y() == 0:
                 ev.accept()
@@ -5446,6 +5674,10 @@ class Canvas(
             self._space_pan_prev_point = None
             self._restore_space_pan_cursor()
             ev.accept()
+            return
+        if self.is_brush_mode and key == QtCore.Qt.Key.Key_Control:
+            self.eraser_mode = False
+            self.update()
             return
         if (
             key == QtCore.Qt.Key.Key_Alt

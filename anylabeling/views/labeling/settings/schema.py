@@ -1411,6 +1411,8 @@ def _shortcut_category_map() -> dict[str, tuple[str, ...]]:
             "delete_polygon",
             "duplicate_polygon",
             "edit_brush_mode",
+            "edit_by_polygon",
+            "edit_by_rectangle",
             "edit_label",
             "edit_polygon",
             "group_selected_shapes",

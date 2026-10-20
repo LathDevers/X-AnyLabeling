@@ -27,6 +27,8 @@ class TestLabelWidgetBrushMode(unittest.TestCase):
             "edit",
             "copy_coordinates",
             "edit_brush_mode",
+            "edit_by_rectangle_mode",
+            "edit_by_polygon_mode",
             "union_selection",
         ]
         return SimpleNamespace(
@@ -46,16 +48,23 @@ class TestLabelWidgetBrushMode(unittest.TestCase):
         )
 
     def test_active_brush_mode_disables_shape_list(self):
-        brush_action = Mock()
+        tool_actions = {
+            "brush": Mock(),
+            "rectangle": Mock(),
+            "polygon": Mock(),
+        }
         label_list = Mock()
         widget = SimpleNamespace(
-            actions=SimpleNamespace(edit_brush_mode=brush_action),
+            canvas=SimpleNamespace(brush_tool="rectangle"),
+            _brush_tool_actions=lambda: tool_actions,
             label_list=label_list,
         )
 
         LabelingWidget.on_brush_mode_changed(widget, True)
 
-        brush_action.setChecked.assert_called_once_with(True)
+        tool_actions["rectangle"].setChecked.assert_called_once_with(True)
+        tool_actions["brush"].setChecked.assert_called_once_with(False)
+        tool_actions["polygon"].setChecked.assert_called_once_with(False)
         label_list.setEnabled.assert_called_once_with(False)
 
     def test_active_brush_mode_rejects_selection_change(self):
@@ -197,6 +206,7 @@ class TestLabelWidgetBrushMode(unittest.TestCase):
             set_text_editing=Mock(),
             hide_attributes_panel=Mock(),
             update_labeling_instruction=Mock(),
+            _uncheck_brush_tool_actions=Mock(),
         )
 
         LabelingWidget.toggle_draw_mode(

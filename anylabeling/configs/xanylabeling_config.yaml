@@ -179,6 +179,8 @@ shortcuts:
   create_linestrip: Shift+S
   edit_polygon: Ctrl+J
   edit_brush_mode: Shift+B
+  edit_by_rectangle: Shift+R
+  edit_by_polygon: Shift+O
   delete_polygon: Delete
   duplicate_polygon: Ctrl+D
   copy_polygon: Ctrl+C
