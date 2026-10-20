@@ -3784,10 +3784,6 @@ class LabelingWidget(LabelDialog):
             return
 
         width = self.central_widget().width() - 2.0
-        height = self.central_widget().height() - 2.0
-
-        im_width = self.canvas.pixmap.width()
-        im_height = self.canvas.pixmap.height()
 
         zoom_scale = 4
 
@@ -3809,28 +3805,7 @@ class LabelingWidget(LabelDialog):
         zoom = min(1000, zoom)
 
         self.set_zoom(zoom)
-
-        x_range = self.scroll_bars[Qt.Orientation.Horizontal].maximum()
-        x_step = self.scroll_bars[Qt.Orientation.Horizontal].pageStep()
-
-        y_range = self.scroll_bars[Qt.Orientation.Vertical].maximum()
-        # QT docs says Document length = maximum() - minimum() + pageStep().
-        # so there's a weird pageStep thing we gotta add
-        y_step = self.scroll_bars[Qt.Orientation.Vertical].pageStep()
-        screen_width = width / (zoom / 100)
-        # add half a screen to this
-        x_scroll = int((x - screen_width / 2) / im_width * (x_range + x_step))
-        x_scroll = min(max(0, x_scroll), x_range)
-
-        screen_height = height / (zoom / 100)
-
-        y_scroll = int(
-            (y - screen_height / 2) / (im_height) * (y_range + y_step)
-        )
-        y_scroll = min(max(0, y_scroll), y_range)
-
-        self.set_scroll(Qt.Orientation.Horizontal, x_scroll)
-        self.set_scroll(Qt.Orientation.Vertical, y_scroll)
+        self._center_view_on(QtCore.QPointF(x, y))
         self.canvas.prev_h_shape = self.canvas.h_shape = shape
         self.canvas.select_shapes([shape])
 
@@ -5719,17 +5694,12 @@ class LabelingWidget(LabelDialog):
         if not hasattr(self, "image") or self.image.isNull():
             return
 
-        scroll_area = self._central_widget
-        canvas_size = self.canvas.size()
-        scroll_area_size = scroll_area.viewport().size()
-
-        target_x = x_ratio * canvas_size.width() - scroll_area_size.width() / 2
-        target_y = (
-            y_ratio * canvas_size.height() - scroll_area_size.height() / 2
+        pixmap = self.canvas.pixmap
+        self._center_view_on(
+            QtCore.QPointF(
+                x_ratio * pixmap.width(), y_ratio * pixmap.height()
+            )
         )
-
-        self.set_scroll(Qt.Orientation.Horizontal, target_x)
-        self.set_scroll(Qt.Orientation.Vertical, target_y)
 
     def update_navigator_viewport(self):
         """Update the viewport rectangle in the navigator."""
@@ -5742,20 +5712,32 @@ class LabelingWidget(LabelDialog):
         if self.image.isNull():
             return
 
-        scroll_area = self._central_widget
-        canvas_size = self.canvas.size()
-        scroll_area_size = scroll_area.viewport().size()
-        if canvas_size.width() <= 0 or canvas_size.height() <= 0:
+        pixmap = self.canvas.pixmap
+        if pixmap is None or pixmap.width() <= 0 or pixmap.height() <= 0:
             return
 
-        h_scroll = self.scroll_bars[Qt.Orientation.Horizontal].value()
-        v_scroll = self.scroll_bars[Qt.Orientation.Vertical].value()
-        x_ratio = max(0.0, h_scroll / canvas_size.width())
-        y_ratio = max(0.0, v_scroll / canvas_size.height())
-        width_ratio = min(1.0, scroll_area_size.width() / canvas_size.width())
-        height_ratio = min(
-            1.0, scroll_area_size.height() / canvas_size.height()
+        # Visible image region, clipped to the image (the view can show
+        # pan margin around it).
+        viewport = self._central_widget.viewport().size()
+        top_left = self.canvas.transform_pos(
+            QtCore.QPointF(
+                self.scroll_bars[Qt.Orientation.Horizontal].value(),
+                self.scroll_bars[Qt.Orientation.Vertical].value(),
+            )
         )
+        visible = QtCore.QRectF(
+            top_left,
+            QtCore.QSizeF(
+                viewport.width() / self.canvas.scale,
+                viewport.height() / self.canvas.scale,
+            ),
+        ).intersected(QtCore.QRectF(0, 0, pixmap.width(), pixmap.height()))
+        if visible.isEmpty():
+            return
+        x_ratio = visible.x() / pixmap.width()
+        y_ratio = visible.y() / pixmap.height()
+        width_ratio = visible.width() / pixmap.width()
+        height_ratio = visible.height() / pixmap.height()
 
         self.navigator_dialog.set_viewport(
             x_ratio, y_ratio, width_ratio, height_ratio
@@ -5785,114 +5767,25 @@ class LabelingWidget(LabelDialog):
         if not hasattr(self, "image") or self.image.isNull():
             return
 
+        # Zoom around the navigator cursor, or else the viewport center.
+        canvas_pos = None
         if mouse_pos is not None:
             canvas_pos = self._convert_navigator_pos_to_canvas(mouse_pos)
-            if canvas_pos:
-                canvas_width_old = self.canvas.width()
-
-                self.zoom_widget.setValue(zoom_percentage)
-                self.zoom_mode = self.MANUAL_ZOOM
-                self.zoom_values[self.filename] = (
-                    self.zoom_mode,
-                    zoom_percentage,
+        if canvas_pos is None:
+            nav_widget = getattr(self.navigator_dialog, "navigator", None)
+            viewport_rect = getattr(nav_widget, "viewport_rect", None)
+            if viewport_rect is not None and not viewport_rect.isEmpty():
+                canvas_pos = self._convert_navigator_pos_to_canvas(
+                    viewport_rect.center()
                 )
-                self.paint_canvas()
+        anchor = self._zoom_anchor(canvas_pos) if canvas_pos else None
 
-                canvas_width_new = self.canvas.width()
-                if canvas_width_old != canvas_width_new:
-                    canvas_scale_factor = canvas_width_new / canvas_width_old
-                    x_shift = round(
-                        canvas_pos.x() * canvas_scale_factor - canvas_pos.x()
-                    )
-                    y_shift = round(
-                        canvas_pos.y() * canvas_scale_factor - canvas_pos.y()
-                    )
-                    self.set_scroll(
-                        QtCore.Qt.Orientation.Horizontal,
-                        self.scroll_bars[
-                            QtCore.Qt.Orientation.Horizontal
-                        ].value()
-                        + x_shift,
-                    )
-                    self.set_scroll(
-                        QtCore.Qt.Orientation.Vertical,
-                        self.scroll_bars[
-                            QtCore.Qt.Orientation.Vertical
-                        ].value()
-                        + y_shift,
-                    )
-
-                return
-
-        # Handle direct zoom changes
-        if (
-            hasattr(self, "canvas")
-            and hasattr(self.canvas, "width")
-            and hasattr(self.canvas, "height")
-        ):
-            if hasattr(self.navigator_dialog, "navigator"):
-                nav_widget = self.navigator_dialog.navigator
-                if (
-                    hasattr(nav_widget, "viewport_rect")
-                    and not nav_widget.viewport_rect.isEmpty()
-                ):
-                    nav_rect_center_x = nav_widget.viewport_rect.center().x()
-                    nav_rect_center_y = nav_widget.viewport_rect.center().y()
-                    canvas_pos = self._convert_navigator_pos_to_canvas(
-                        QtCore.QPoint(
-                            int(nav_rect_center_x), int(nav_rect_center_y)
-                        )
-                    )
-
-                    if canvas_pos:
-                        canvas_width_old = self.canvas.width()
-
-                        self.zoom_widget.setValue(zoom_percentage)
-                        self.zoom_mode = self.MANUAL_ZOOM
-                        self.zoom_values[self.filename] = (
-                            self.zoom_mode,
-                            zoom_percentage,
-                        )
-                        self.paint_canvas()
-
-                        canvas_width_new = self.canvas.width()
-                        if canvas_width_old != canvas_width_new:
-                            canvas_scale_factor = (
-                                canvas_width_new / canvas_width_old
-                            )
-                            x_shift = round(
-                                canvas_pos.x() * canvas_scale_factor
-                                - canvas_pos.x()
-                            )
-                            y_shift = round(
-                                canvas_pos.y() * canvas_scale_factor
-                                - canvas_pos.y()
-                            )
-                            self.set_scroll(
-                                QtCore.Qt.Orientation.Horizontal,
-                                self.scroll_bars[
-                                    QtCore.Qt.Orientation.Horizontal
-                                ].value()
-                                + x_shift,
-                            )
-                            self.set_scroll(
-                                QtCore.Qt.Orientation.Vertical,
-                                self.scroll_bars[
-                                    QtCore.Qt.Orientation.Vertical
-                                ].value()
-                                + y_shift,
-                            )
-                        return
-
-            self.zoom_widget.setValue(zoom_percentage)
-            self.zoom_mode = self.MANUAL_ZOOM
-            self.zoom_values[self.filename] = (self.zoom_mode, zoom_percentage)
-            self.paint_canvas()
-        else:
-            self.zoom_widget.setValue(zoom_percentage)
-            self.zoom_mode = self.MANUAL_ZOOM
-            self.zoom_values[self.filename] = (self.zoom_mode, zoom_percentage)
-            self.paint_canvas()
+        self.zoom_widget.setValue(zoom_percentage)
+        self.zoom_mode = self.MANUAL_ZOOM
+        self.zoom_values[self.filename] = (self.zoom_mode, zoom_percentage)
+        self.paint_canvas()
+        if anchor is not None:
+            self._restore_zoom_anchor(anchor)
 
     def _convert_navigator_pos_to_canvas(
         self, navigator_pos: QtCore.QPoint
@@ -5926,10 +5819,13 @@ class LabelingWidget(LabelDialog):
         y_ratio = relative_y / navigator_widget.image_rect.height()
 
         # Convert to canvas coordinates
-        canvas_x = int(x_ratio * self.canvas.width())
-        canvas_y = int(y_ratio * self.canvas.height())
-
-        return QtCore.QPoint(canvas_x, canvas_y)
+        canvas_pos = self._image_to_canvas_pos(
+            QtCore.QPointF(
+                x_ratio * self.canvas.pixmap.width(),
+                y_ratio * self.canvas.pixmap.height(),
+            )
+        )
+        return canvas_pos.toPoint()
 
     def on_navigator_viewport_update_requested(self):
         """Handle viewport update request from navigator resize"""
@@ -6117,7 +6013,25 @@ class LabelingWidget(LabelDialog):
             and event.type() == QtCore.QEvent.Type.Resize
         ):
             self._position_canvas_adjustment()
+            # The viewport also changes size when scrollbars appear, which
+            # the widget's own resizeEvent does not see; keep fits fitted.
+            if getattr(
+                self, "zoom_mode", self.MANUAL_ZOOM
+            ) != self.MANUAL_ZOOM and not getattr(
+                self, "_refit_pending", False
+            ):
+                self._refit_pending = True
+                QtCore.QTimer.singleShot(0, self._refit_to_viewport)
         return super().eventFilter(obj, event)
+
+    def _refit_to_viewport(self):
+        self._refit_pending = False
+        if (
+            self.zoom_mode != self.MANUAL_ZOOM
+            and self.canvas.pixmap is not None
+            and not self.image.isNull()
+        ):
+            self.adjust_scale()
 
     def hide_selected_polygons(self):
         shapes_to_hide = []
@@ -6443,12 +6357,53 @@ class LabelingWidget(LabelDialog):
         self.zoom_values[self.filename] = (self.zoom_mode, value)
         if hasattr(self, "navigator_dialog"):
             self.navigator_dialog.set_zoom_value(value)
+        # The canvas is larger than the image (pan margin), so a fit has to
+        # scroll the image back into place rather than rely on scroll 0.
+        self.paint_canvas()
+        self._reset_view_position()
+
+    def _image_to_canvas_pos(self, image_pos):
+        """Map an image point to canvas widget pixels."""
+        return (
+            QtCore.QPointF(image_pos) + self.canvas.offset_to_center()
+        ) * self.canvas.scale
+
+    def _center_view_on(self, image_pos):
+        """Scroll so that an image point sits in the middle of the viewport."""
+        canvas_pos = self._image_to_canvas_pos(image_pos)
+        viewport = self._canvas_scroll_area.viewport().size()
+        self.set_scroll(
+            Qt.Orientation.Horizontal, canvas_pos.x() - viewport.width() / 2
+        )
+        self.set_scroll(
+            Qt.Orientation.Vertical, canvas_pos.y() - viewport.height() / 2
+        )
+
+    def _reset_view_position(self):
+        """Center the image on axes where it fits, else show its top-left."""
+        pixmap = self.canvas.pixmap
+        if pixmap is None or pixmap.isNull():
+            return
+        viewport = self._canvas_scroll_area.viewport().size()
+        origin = self._image_to_canvas_pos(QtCore.QPointF(0, 0))
+        width = pixmap.width() * self.canvas.scale
+        height = pixmap.height() * self.canvas.scale
+        x = origin.x()
+        if width <= viewport.width():
+            x += (width - viewport.width()) / 2
+        y = origin.y()
+        if height <= viewport.height():
+            y += (height - viewport.height()) / 2
+        self.set_scroll(Qt.Orientation.Horizontal, x)
+        self.set_scroll(Qt.Orientation.Vertical, y)
 
     def scale_fit_window(self):
         """Figure out the size of the pixmap to fit the main widget."""
-        e = 2.0  # So that no scrollbars are generated.
-        w1 = self.central_widget().width() - e
-        h1 = self.central_widget().height() - e
+        # Fit the viewport, not the scroll area: the pan margin keeps the
+        # scrollbars visible, and they take space from it.
+        viewport = self._canvas_scroll_area.viewport()
+        w1 = viewport.width()
+        h1 = viewport.height()
         # Calculate a new scale value based on the pixmap's aspect ratio.
         w2 = self.canvas.pixmap.width() - 0.0
         h2 = self.canvas.pixmap.height() - 0.0
@@ -6459,8 +6414,7 @@ class LabelingWidget(LabelDialog):
         return w1 / w2 if wh_ratio2 >= wh_ratio1 else h1 / h2
 
     def scale_fit_width(self):
-        # The epsilon does not seem to work too well here.
-        w = self.central_widget().width() - 2.0
+        w = self._canvas_scroll_area.viewport().width()
         pw = self.canvas.pixmap.width()
         return w / pw if pw > 0 else 1.0
 

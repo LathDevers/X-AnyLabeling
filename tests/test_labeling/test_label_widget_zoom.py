@@ -45,6 +45,11 @@ if PYQT_AVAILABLE:
             self._pinch_zoom_value = None
             self._pinch_anchor = None
             self.set_zoom(zoom)
+            # Start with the image's top-left at the viewport's, past the
+            # pan margin, as LabelingWidget does after loading.
+            margin = self.canvas.pan_margin()
+            self.set_scroll(Qt.Orientation.Horizontal, margin.width())
+            self.set_scroll(Qt.Orientation.Vertical, margin.height())
 
         def paint_canvas(self):
             self.canvas.scale = 0.01 * self.zoom_widget.value()

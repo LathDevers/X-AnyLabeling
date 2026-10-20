@@ -2205,7 +2205,7 @@ class Canvas(
             "quadrilateral",
             "cuboid",
         ]:
-            pos = self.intersection_point(self.current[-1], pos)
+            pos = self.clamp_to_pixmap(pos)
         elif (
             self.snapping
             and len(self.current) > 1
@@ -2369,7 +2369,7 @@ class Canvas(
                 "quadrilateral",
                 "cuboid",
             ]:
-                pos = self.intersection_point(self.current[-1], pos)
+                pos = self.clamp_to_pixmap(pos)
             elif (
                 self.snapping
                 and len(self.current) > 1
@@ -3025,7 +3025,9 @@ class Canvas(
                     ):
                         self.prev_pan_point = ev.position()
                         self.mode_changed.emit()
-                elif not self.out_off_pixmap(pos):
+                elif not self.out_off_pixmap(
+                    pos := self._clamp_create_pos(pos)
+                ):
                     # Handle auto decode mode first click
                     if self.auto_decode_mode and self.is_auto_labeling:
                         if (
@@ -3044,23 +3046,6 @@ class Canvas(
                     else:
                         if self.create_mode == "circle":
                             self.current.shape_type = "circle"
-                        self.line.points = [pos, pos]
-                        self.set_hiding()
-                        self.drawing_polygon.emit(True)
-                        self.update()
-                elif self.out_off_pixmap(pos) and self.create_mode in [
-                    "polygon",
-                    "linestrip",
-                ]:
-                    w = self.pixmap.width()
-                    h = self.pixmap.height()
-                    if w > 0 and h > 0:
-                        pos = QtCore.QPointF(
-                            min(max(pos.x(), 0), w - 1),
-                            min(max(pos.y(), 0), h - 1),
-                        )
-                        self.current = Shape(shape_type=self.create_mode)
-                        self.current.add_point(pos)
                         self.line.points = [pos, pos]
                         self.set_hiding()
                         self.drawing_polygon.emit(True)
@@ -3989,7 +3974,7 @@ class Canvas(
             self.out_off_pixmap(pos)
             and shape.shape_type not in self.allowed_oop_shape_types
         ):
-            pos = self.intersection_point(point, pos)
+            pos = self.clamp_to_pixmap(pos)
 
         if shape.shape_type == "rotation":
             sindex = (index + 2) % 4
@@ -5133,6 +5118,30 @@ class Canvas(
         y = (area_height - h) / (2 * s) if area_height > h else 0
         return QtCore.QPointF(x, y)
 
+    # Shapes clipped to the image at finalise; every other create mode snaps out-of-image points to the nearest image pixel.
+    UNCLAMPED_CREATE_MODES = ("rectangle", "rotation", "quadrilateral", "cuboid")
+
+    def clamp_to_pixmap(self, p):
+        """Return the image pixel nearest to ``p``."""
+        if self.pixmap is None:
+            return QtCore.QPointF(p)
+        w, h = self.pixmap.width(), self.pixmap.height()
+        return QtCore.QPointF(
+            min(max(p.x(), 0), max(w - 1, 0)),
+            min(max(p.y(), 0), max(h - 1, 0)),
+        )
+
+    def _clamp_create_pos(self, pos):
+        """Snap a create-mode click outside the image onto its edge."""
+        if (
+            self.pixmap is None
+            or self.pixmap.width() <= 0
+            or self.pixmap.height() <= 0
+            or self.create_mode in self.UNCLAMPED_CREATE_MODES
+        ):
+            return pos
+        return self.clamp_to_pixmap(pos)
+
     def out_off_pixmap(self, p):
         """Check if a position is out of pixmap"""
         if self.pixmap is None:
@@ -5243,65 +5252,6 @@ class Canvas(
         # divide by scale to allow more precision when zoomed in
         return utils.distance(p1 - p2) < (self.epsilon / self.scale)
 
-    def intersection_point(self, p1, p2):
-        """Cycle through each image edge in clockwise fashion,
-        and find the one intersecting the current line segment.
-        """
-        size = self.pixmap.size()
-        points = [
-            (0, 0),
-            (size.width() - 1, 0),
-            (size.width() - 1, size.height() - 1),
-            (0, size.height() - 1),
-        ]
-        # x1, y1 should be in the pixmap, x2, y2 should be out of the pixmap
-        x1 = min(max(p1.x(), 0), size.width() - 1)
-        y1 = min(max(p1.y(), 0), size.height() - 1)
-        x2, y2 = p2.x(), p2.y()
-        _, i, (x, y) = min(self.intersecting_edges((x1, y1), (x2, y2), points))
-        x3, y3 = points[i]
-        x4, y4 = points[(i + 1) % 4]
-        x1, y1 = int(x1), int(y1)
-        x2, y2 = int(x2), int(y2)
-        x3, y3 = int(x3), int(y3)
-        x4, y4 = int(x4), int(y4)
-        if (x, y) == (x1, y1):
-            # Handle cases where previous point is on one of the edges.
-            if x3 == x4:
-                return QtCore.QPointF(x3, min(max(0, y2), max(y3, y4)))
-            # y3 == y4
-            return QtCore.QPointF(min(max(0, x2), max(x3, x4)), y3)
-        return QtCore.QPointF(int(x), int(y))
-
-    def intersecting_edges(self, point1, point2, points):
-        """Find intersecting edges.
-
-        For each edge formed by `points', yield the intersection
-        with the line segment `(x1,y1) - (x2,y2)`, if it exists.
-        Also return the distance of `(x2,y2)' to the middle of the
-        edge along with its index, so that the one closest can be chosen.
-        """
-        x1, y1 = point1
-        x2, y2 = point2
-        for i in range(4):
-            x3, y3 = points[i]
-            x4, y4 = points[(i + 1) % 4]
-            denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1)
-            nua = (x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)
-            nub = (x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)
-            if denom == 0:
-                # This covers two cases:
-                #   nua == nub == 0: Coincident
-                #   otherwise: Parallel
-                continue
-            ua, ub = nua / denom, nub / denom
-            if 0 <= ua <= 1 and 0 <= ub <= 1:
-                x = x1 + ua * (x2 - x1)
-                y = y1 + ua * (y2 - y1)
-                m = QtCore.QPointF((x3 + x4) / 2, (y3 + y4) / 2)
-                d = utils.distance(m - QtCore.QPointF(x2, y2))
-                yield d, i, (x, y)
-
     # These two, along with a call to adjustSize are required for the
     # scroll area.
     # QT Overload
@@ -5309,11 +5259,24 @@ class Canvas(
         """Get size hint"""
         return self.minimumSizeHint()
 
+    # Empty canvas around the image, as a fraction of the viewport per side. It lets the image be panned until its edges reach the middle of the view, and keeps the cursor on the canvas just past the image so shapes can be drawn up to its edges.
+    PAN_MARGIN_RATIO = 0.5
+
+    def pan_margin(self):
+        """Return the empty margin kept on each side of the image, in widget pixels."""
+        viewport = self.parentWidget()
+        if self.pixmap is None or viewport is None:
+            return QtCore.QSize()
+        return QtCore.QSize(
+            int(viewport.width() * self.PAN_MARGIN_RATIO),
+            int(viewport.height() * self.PAN_MARGIN_RATIO),
+        )
+
     # QT Overload
     def minimumSizeHint(self):
         """Get minimum size hint"""
         if self.pixmap:
-            return self.scale * self.pixmap.size()
+            return self.scale * self.pixmap.size() + 2 * self.pan_margin()
         return super().minimumSizeHint()
 
     # QT Overload
