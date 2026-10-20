@@ -13,6 +13,8 @@ try:
     from anylabeling.views.labeling.widgets.canvas_adjustment import (
         BrightnessContrastProcessor,
         CanvasAdjustmentWidget,
+        equalize_grayscale16,
+        equalize_histogram,
     )
 
     PYQT_AVAILABLE = True
@@ -68,6 +70,15 @@ class TestCanvasAdjustmentWidget(unittest.TestCase):
         self.assertFalse(self.widget.property("collapsed"))
         self.assertEqual(self.widget.sizeHint(), expanded_size)
         self.assertIn("Collapse", self.widget.toggle_button.toolTip())
+
+    def test_equalize_toggle_emits_and_programmatic_set_is_silent(self):
+        spy = QtTest.QSignalSpy(self.widget.equalize_changed)
+
+        self.widget.equalize_button.click()
+        self.widget.set_equalize(False)
+
+        self.assertEqual([list(args) for args in spy], [[True]])
+        self.assertFalse(self.widget.equalize_button.isChecked())
 
     def test_brightness_contrast_updates_are_throttled(self):
         signal_spy = QtTest.QSignalSpy(self.widget.brightness_contrast_changed)
@@ -130,6 +141,47 @@ class TestBrightnessContrastProcessor(unittest.TestCase):
         self.assertIsNone(processor._grayscale16_mean)
         self.assertIsNone(processor._grayscale16_qimage_data)
 
+
+    def test_equalize_brightens_dark_color_image_and_keeps_alpha(self):
+        rng = np.random.default_rng(0)
+        data = rng.integers(0, 40, size=(32, 32, 4), dtype=np.uint8)
+        data[..., 3] = 128
+        image = Image.fromarray(data, "RGBA")
+
+        result = np.asarray(equalize_histogram(image))
+
+        self.assertEqual(result.shape, (32, 32, 4))
+        self.assertGreater(result[..., :3].mean(), data[..., :3].mean() * 2)
+        self.assertGreater(result[..., :3].max(), 200)
+        self.assertTrue((result[..., 3] == 128).all())
+
+    def test_equalize_stretches_16_bit_grayscale(self):
+        data = np.array([[100, 200], [300, 400]], dtype=np.uint16)
+
+        result = equalize_grayscale16(data)
+
+        self.assertEqual(result.dtype, np.uint16)
+        self.assertEqual(result.min(), 0)
+        self.assertEqual(result.max(), 65535)
+        flat = np.full((3, 3), 7, dtype=np.uint16)
+        self.assertTrue((equalize_grayscale16(flat) == flat).all())
+
+    def test_processor_applies_equalize_under_brightness_contrast(self):
+        dark = Image.fromarray(
+            np.tile(np.arange(0, 32, dtype=np.uint8), (8, 1)), "L"
+        )
+        processor = BrightnessContrastProcessor()
+        processor.update_image(dark)
+
+        plain = processor.adjust(50, 50)
+        processor.set_equalize(True)
+        equalized = processor.adjust(50, 50)
+        processor.set_equalize(False)
+        restored = processor.adjust(50, 50)
+
+        self.assertLess(plain.pixelColor(31, 0).value(), 40)
+        self.assertGreater(equalized.pixelColor(31, 0).value(), 240)
+        self.assertEqual(restored.pixelColor(31, 0), plain.pixelColor(31, 0))
 
 if __name__ == "__main__":
     unittest.main()

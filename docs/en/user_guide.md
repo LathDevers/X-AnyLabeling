@@ -377,6 +377,8 @@ Use the collapsible **Canvas Display** panel at the bottom-left of the canvas to
 
 To apply the current adjustments to all subsequent images in the session, enable `View` > `Keep Current Brightness` and `View` > `Keep Current Contrast`.
 
+**Histogram equalization:** Click **Equalize** in the **Levels** row, or press `Ctrl+Shift+E` (`View` > `Equalize Histogram`), to spread the image's luminance over the full range so dark or flat images become easier to annotate. Like CVAT, color images are equalized on the luminance channel only, so colors can look less saturated. It is display-only, stays on for subsequent images until toggled off, and can be combined with the Brightness and Contrast sliders.
+
 ### 3.3 Shape Display
 
 You can control the visibility of various shape attributes:

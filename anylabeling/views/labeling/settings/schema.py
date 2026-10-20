@@ -1436,6 +1436,7 @@ def _shortcut_category_map() -> dict[str, tuple[str, ...]]:
             "show_masks",
             "show_texts",
             "toggle_image_tags",
+            "toggle_equalize",
             "toggle_auto_use_last_gid",
             "toggle_auto_use_last_label",
             "toggle_compare_view",

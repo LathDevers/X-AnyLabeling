@@ -13,6 +13,7 @@ The widget only emits signals; the actual rendering is handled by the owner
 that 16-bit grayscale images keep working.
 """
 
+import cv2
 import PIL.Image
 import PIL.ImageEnhance
 import numpy as np
@@ -26,11 +27,54 @@ from ..utils.theme import get_theme
 GRAYSCALE_16BIT_MODES = {"I;16", "I;16L", "I;16B"}
 
 
+def equalize_histogram(image):
+    """Spread an image's luminance over the full range, like CVAT.
+
+    Color images are equalized on the Y channel of YUV only, so hues stay put but saturation can look lower; grayscale images are equalized directly.
+
+    Args:
+        image: A PIL image of any mode.
+
+    Returns:
+        A new PIL image in ``L``, ``RGB`` or ``RGBA`` mode.
+    """
+    if image.mode == "L":
+        return PIL.Image.fromarray(cv2.equalizeHist(np.asarray(image)))
+    alpha = image.getchannel("A") if "A" in image.getbands() else None
+    rgb = np.asarray(image.convert("RGB"))
+    yuv = cv2.cvtColor(rgb, cv2.COLOR_RGB2YUV)
+    yuv[..., 0] = cv2.equalizeHist(np.ascontiguousarray(yuv[..., 0]))
+    result = PIL.Image.fromarray(cv2.cvtColor(yuv, cv2.COLOR_YUV2RGB))
+    if alpha is not None:
+        result.putalpha(alpha)
+    return result
+
+
+def equalize_grayscale16(data):
+    """Histogram-equalize a 16-bit grayscale array over the full uint16 range.
+
+    ``cv2.equalizeHist`` only handles 8-bit input, so this maps each value through the normalized cumulative histogram.
+    """
+    max_value = np.iinfo(np.uint16).max
+    cdf = np.bincount(data.ravel(), minlength=max_value + 1).cumsum()
+    cdf_min = cdf[np.flatnonzero(cdf)[0]]
+    total = cdf[-1]
+    if total == cdf_min:
+        return data
+    lut = (cdf - cdf_min) * (max_value / (total - cdf_min))
+    lut = np.clip(np.round(lut), 0, max_value).astype(np.uint16)
+    return lut[data]
+
+
 class BrightnessContrastProcessor:
     """Apply display-only brightness and contrast adjustments to an image."""
 
     def __init__(self):
         self.img = None
+        # Histogram equalization runs before brightness/contrast, so the
+        # sliders still work on top of it. It stays on across images.
+        self.equalize = False
+        self._equalized_img = None
         self._grayscale16_data = None
         self._grayscale16_mean = None
         self._grayscale16_qimage_data = None
@@ -46,9 +90,20 @@ class BrightnessContrastProcessor:
         if self.img is not None:
             self.img.close()
         self.img = None
+        self._equalized_img = None
         self._grayscale16_data = None
         self._grayscale16_mean = None
         self._grayscale16_qimage_data = None
+
+    def set_equalize(self, enabled):
+        """Turn histogram equalization of the displayed image on or off."""
+        enabled = bool(enabled)
+        if enabled == self.equalize:
+            return
+        self.equalize = enabled
+        # The 16-bit base data and its mean depend on the flag.
+        self._grayscale16_data = None
+        self._grayscale16_mean = None
 
     def adjust(self, brightness, contrast):
         """Return an adjusted image for the requested display factors."""
@@ -64,6 +119,10 @@ class BrightnessContrastProcessor:
             return self._enhance_grayscale16(brightness, contrast)
 
         img = self.img
+        if self.equalize:
+            if self._equalized_img is None:
+                self._equalized_img = equalize_histogram(self.img)
+            img = self._equalized_img
         if brightness != 1:
             img = PIL.ImageEnhance.Brightness(img).enhance(brightness)
         if contrast != 1:
@@ -74,6 +133,8 @@ class BrightnessContrastProcessor:
         """Initialize data used for 16-bit grayscale enhancement."""
         data = np.asarray(self.img).astype(np.uint16, copy=False)
         if data.ndim == 2:
+            if self.equalize:
+                data = equalize_grayscale16(data)
             self._grayscale16_data = np.ascontiguousarray(data)
             self._grayscale16_mean = float(self._grayscale16_data.mean())
 
@@ -106,6 +167,8 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
     # Emitted when brightness or contrast changes. Values are in range 0-150
     # (factor = value / 50).
     brightness_contrast_changed = QtCore.pyqtSignal(int, int)
+    # Emitted when histogram equalization is toggled.
+    equalize_changed = QtCore.pyqtSignal(bool)
     geometry_changed = QtCore.pyqtSignal()
 
     SLIDER_WIDTH = 120
@@ -207,6 +270,15 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
             self.tr("Adjust the contrast of the underlying image."),
             display="factor",
         )
+        self.equalize_button = self._build_toggle_row(
+            content_layout,
+            self.tr("Levels"),
+            self.tr("Equalize"),
+            self.tr(
+                "Equalize the image histogram so dark or flat images are "
+                "easier to see. Display only; colors may look less saturated."
+            ),
+        )
         layout.addWidget(self.content_widget)
 
         self.setLayout(layout)
@@ -221,6 +293,7 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
         self.brightness_slider.valueChanged.connect(self._on_bc_changed)
         self.contrast_slider.valueChanged.connect(self._on_bc_changed)
+        self.equalize_button.toggled.connect(self.equalize_changed)
 
     def _build_stylesheet(self):
         """Translucent white card with theme-blue sliders."""
@@ -307,6 +380,39 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         layout.addLayout(row)
         return slider, value_label
 
+    def _toggle_css(self):
+        """Reset-button look, filled with the theme color while checked."""
+        primary = get_theme().get("primary", "#0071e3")
+        return (
+            self._RESET_CSS
+            + "QPushButton { padding: 0 8px; }"
+            + f"QPushButton:checked {{ background: {primary}; color: white; }}"
+        )
+
+    def _build_toggle_row(self, layout, title, text, tooltip):
+        """Create one labelled on/off button row and append it to ``layout``."""
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+
+        name_label = QtWidgets.QLabel(title)
+        name_label.setFixedWidth(64)
+        name_label.setStyleSheet(self._LABEL_CSS)
+        name_label.setToolTip(tooltip)
+
+        button = QtWidgets.QPushButton(text)
+        button.setCheckable(True)
+        button.setFixedHeight(20)
+        button.setStyleSheet(self._toggle_css())
+        button.setToolTip(tooltip)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        row.addWidget(name_label)
+        row.addWidget(button)
+        row.addStretch()
+        layout.addLayout(row)
+        return button
+
     @staticmethod
     def _set_value_text(label, value):
         """Format the value for display based on the label's display mode."""
@@ -361,6 +467,12 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         self.opacity_slider.setValue(value)
         self.opacity_slider.blockSignals(False)
         self._set_value_text(self.opacity_value_label, value)
+
+    def set_equalize(self, enabled):
+        """Set the equalize toggle without emitting ``equalize_changed``."""
+        self.equalize_button.blockSignals(True)
+        self.equalize_button.setChecked(bool(enabled))
+        self.equalize_button.blockSignals(False)
 
     def set_brightness_contrast(self, brightness, contrast):
         """Set the brightness/contrast sliders without emitting signals."""

@@ -469,6 +469,7 @@ class LabelingWidget(LabelDialog):
         self.canvas_adjustment.brightness_contrast_changed.connect(
             self._on_inline_brightness_contrast
         )
+        self.canvas_adjustment.equalize_changed.connect(self.set_equalize)
         self.canvas_adjustment.geometry_changed.connect(
             self._position_canvas_adjustment
         )
@@ -1808,6 +1809,19 @@ class LabelingWidget(LabelDialog):
             enabled=True,
         )
 
+        toggle_equalize = action(
+            self.tr("Equalize Histogram"),
+            self.set_equalize,
+            shortcuts.get("toggle_equalize", "Ctrl+Shift+E"),
+            tip=self.tr(
+                "Equalize the displayed image's histogram so dark or flat "
+                "images are easier to annotate"
+            ),
+            checkable=True,
+            checked=False,
+            enabled=True,
+        )
+
         show_image_tags = action(
             self.tr("Image Tags"),
             self.toggle_image_tags_visibility,
@@ -1947,6 +1961,7 @@ class LabelingWidget(LabelDialog):
             show_attributes=show_attributes,
             show_linking=show_linking,
             show_navigator=show_navigator,
+            toggle_equalize=toggle_equalize,
             show_image_tags=show_image_tags,
             zoom_actions=zoom_actions,
             open_next_image=open_next_image,
@@ -2230,6 +2245,7 @@ class LabelingWidget(LabelDialog):
             self.menus.view,
             (
                 show_navigator,
+                toggle_equalize,
                 show_image_tags,
                 fill_drawing,
                 loop_thru_labels,
@@ -5993,6 +6009,30 @@ class LabelingWidget(LabelDialog):
         )
         self.brightness_contrast_values[self.filename] = (brightness, contrast)
 
+    def set_equalize(self, enabled):
+        """Toggle histogram equalization of the displayed image.
+
+        It is display-only and stays on across images until toggled off.
+        """
+        enabled = bool(enabled)
+        self.brightness_contrast_processor.set_equalize(enabled)
+        self.actions.toggle_equalize.setChecked(enabled)
+        self.canvas_adjustment.set_equalize(enabled)
+        if self.image_data is None or self.filename is None:
+            return
+        if self.brightness_contrast_processor.img is None:
+            return
+        brightness, contrast = self.brightness_contrast_values.get(
+            self.filename, (None, None)
+        )
+        qimage = self.brightness_contrast_processor.adjust(
+            brightness if brightness is not None else 50,
+            contrast if contrast is not None else 50,
+        )
+        self.canvas.load_pixmap(
+            QtGui.QPixmap.fromImage(qimage), clear_shapes=False
+        )
+
     def _position_canvas_adjustment(self):
         """Keep the adjustment panel anchored to the viewport's bottom-left."""
         if not hasattr(self, "canvas_adjustment"):
@@ -6288,7 +6328,11 @@ class LabelingWidget(LabelDialog):
         self.brightness_contrast_processor.update_image(
             utils.img_data_to_pil(self.image_data)
         )
-        if brightness is not None or contrast is not None:
+        if (
+            brightness is not None
+            or contrast is not None
+            or self.brightness_contrast_processor.equalize
+        ):
             qimage = self.brightness_contrast_processor.adjust(
                 brightness if brightness is not None else 50,
                 contrast if contrast is not None else 50,

@@ -165,6 +165,7 @@ shortcuts:
   fit_width: Ctrl+Shift+F
   show_navigator: F9
   toggle_image_tags: Ctrl+Shift+T
+  toggle_equalize: Ctrl+Shift+E
 
   create_polygon: P
   create_brush_polygon: Ctrl+N

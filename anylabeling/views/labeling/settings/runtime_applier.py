@@ -83,6 +83,7 @@ class SettingsRuntimeApplier:
             "shortcuts.fit_width": self._widget.actions.fit_width,
             "shortcuts.show_navigator": self._widget.actions.show_navigator,
             "shortcuts.toggle_image_tags": self._widget.actions.show_image_tags,
+            "shortcuts.toggle_equalize": self._widget.actions.toggle_equalize,
             "shortcuts.create_polygon": self._widget.actions.create_mode,
             "shortcuts.create_brush_polygon": self._widget.actions.create_brush_polygon_mode,
             "shortcuts.create_magic_wand": self._widget.actions.create_magic_wand_mode,
