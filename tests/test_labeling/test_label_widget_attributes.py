@@ -78,8 +78,10 @@ class TestLabelWidgetAttributes(unittest.TestCase):
         widget = SimpleNamespace(
             image_path="/tmp/image.jpg",
             output_dir=None,
+            actions=SimpleNamespace(save=Mock()),
             flag_widget=SimpleNamespace(count=Mock(return_value=0)),
             other_data={},
+            _relation_data_for_shapes=Mock(return_value={}),
             _annotation_checked=Mock(return_value=False),
             _config={"store_data": False},
             image_data=None,
@@ -98,7 +100,7 @@ class TestLabelWidgetAttributes(unittest.TestCase):
             "shapes"
         ][0]
         self.assertEqual(saved_shape["score"], 0.91)
-        self.assertTrue(saved_shape["locked"])
+        self.assertNotIn("locked", saved_shape)
         self.assertEqual(saved_shape["direction"], 0.25)
         self.assertEqual(saved_shape["custom"], "value")
 
@@ -128,6 +130,7 @@ class TestLabelWidgetAttributes(unittest.TestCase):
             description="old",
             difficult=False,
             kie_linking=[],
+            other_data={},
             attributes={"color": "blue"},
             fill_color=SimpleNamespace(
                 getRgb=Mock(return_value=(255, 0, 0, 255))
@@ -150,6 +153,7 @@ class TestLabelWidgetAttributes(unittest.TestCase):
                     return_value=("car", {}, None, "new", False, [])
                 ),
                 add_label_history=Mock(),
+                get_review_status=Mock(return_value="pending"),
             ),
             _config={"move_mode": "auto"},
             validate_label=Mock(return_value=True),
@@ -181,6 +185,7 @@ class TestLabelWidgetAttributes(unittest.TestCase):
             description="",
             difficult=False,
             kie_linking=[],
+            other_data={},
             attributes={"color": "blue"},
         )
         changed_shape = SimpleNamespace(
@@ -190,6 +195,7 @@ class TestLabelWidgetAttributes(unittest.TestCase):
             description="",
             difficult=False,
             kie_linking=[],
+            other_data={},
             attributes={"age": "adult"},
         )
 
@@ -204,6 +210,7 @@ class TestLabelWidgetAttributes(unittest.TestCase):
                     return_value=("car", {}, None, "new", False, [])
                 ),
                 add_label_history=Mock(),
+                get_review_status=Mock(return_value="pending"),
             ),
             validate_label=Mock(return_value=True),
             attributes={"car": {"color": ["red", "blue"]}},

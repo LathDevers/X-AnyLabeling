@@ -20,9 +20,15 @@ import numpy as np
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import Qt
 
+from ..pointcloud.icons import get_icon
 from ..utils.image import pil_to_qimage
 from ..utils.qt import new_icon
-from ..utils.theme import get_theme
+from ..utils.style import (
+    get_checkbox_indicator_style,
+    get_settings_combo_style,
+    get_spinbox_style,
+)
+from ..utils.theme import LIGHT, get_theme
 
 GRAYSCALE_16BIT_MODES = {"I;16", "I;16L", "I;16B"}
 
@@ -159,6 +165,42 @@ class BrightnessContrastProcessor:
         )
 
 
+class GridSettingsPopup(QtWidgets.QFrame):
+    def __init__(self, parent):
+        super().__init__(
+            parent,
+            Qt.WindowType.Popup
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.arrow_y = 24
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(
+            QtCore.QRectF(9.5, 0.5, self.width() - 10, self.height() - 1),
+            8,
+            8,
+        )
+        arrow = QtGui.QPolygonF(
+            [
+                QtCore.QPointF(10, self.arrow_y - 7),
+                QtCore.QPointF(1, self.arrow_y),
+                QtCore.QPointF(10, self.arrow_y + 7),
+            ]
+        )
+        arrow_path = QtGui.QPainterPath()
+        arrow_path.addPolygon(arrow)
+        path = path.united(arrow_path)
+        theme = LIGHT
+        painter.setPen(QtGui.QPen(QtGui.QColor(theme["border_light"])))
+        painter.setBrush(QtGui.QColor(theme["background"]))
+        painter.drawPath(path)
+
+
 class CanvasAdjustmentWidget(QtWidgets.QWidget):
     """Three-slider panel for label opacity, image brightness and contrast."""
 
@@ -170,8 +212,10 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
     # Emitted when histogram equalization is toggled.
     equalize_changed = QtCore.pyqtSignal(bool)
     geometry_changed = QtCore.pyqtSignal()
+    status_changed = QtCore.pyqtSignal(object)
+    grid_changed = QtCore.pyqtSignal(bool, int, str, int, bool)
 
-    SLIDER_WIDTH = 120
+    SLIDER_WIDTH = 90
     BC_UPDATE_INTERVAL_MS = 33
 
     # Opacity: 0-100%, fully opaque by default.
@@ -187,15 +231,11 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
     _LABEL_CSS = (
         "QLabel { color: #333; font-size: 11px; background: transparent; }"
     )
-    _TITLE_CSS = (
-        "QLabel { color: #333; font-size: 11px; font-weight: 600;"
-        " background: transparent; }"
-    )
-    _RESET_CSS = (
-        "QPushButton { background: rgba(120, 120, 120, 60);"
-        " border-radius: 3px; font-size: 11px; color: #333; padding: 0; }"
-        "QPushButton:hover { background: rgba(120, 120, 120, 110); }"
-        "QPushButton:pressed { background: rgba(120, 120, 120, 150); }"
+    _ROW_BUTTON_CSS = (
+        "QToolButton { background: transparent;"
+        " border: none; border-radius: 3px; padding: 0; }"
+        "QToolButton:hover { background: rgba(120, 120, 120, 110); }"
+        "QToolButton:pressed { background: rgba(120, 120, 120, 150); }"
     )
 
     def __init__(self, parent=None):
@@ -215,10 +255,8 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
 
         header_layout = QtWidgets.QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        self.title_label = QtWidgets.QLabel(self.tr("Canvas Display"))
-        self.title_label.setStyleSheet(self._TITLE_CSS)
         self.toggle_button = QtWidgets.QToolButton()
-        self.toggle_button.setIcon(new_icon("caret-up", "svg"))
+        self.toggle_button.setIcon(new_icon("caret-down", "svg"))
         self.toggle_button.setIconSize(QtCore.QSize(10, 10))
         self.toggle_button.setFixedSize(20, 20)
         self.toggle_button.setToolTip(self.tr("Collapse adjustments"))
@@ -229,10 +267,8 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
             "QToolButton:hover { background: rgba(120, 120, 120, 60); }"
             "QToolButton:pressed { background: rgba(120, 120, 120, 100); }"
         )
-        header_layout.addWidget(self.title_label)
-        header_layout.addStretch()
         header_layout.addWidget(self.toggle_button)
-        layout.addLayout(header_layout)
+        header_layout.addStretch()
 
         self.content_widget = QtWidgets.QWidget()
         content_layout = QtWidgets.QVBoxLayout()
@@ -240,19 +276,25 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         content_layout.setSpacing(5)
         self.content_widget.setLayout(content_layout)
 
-        self.opacity_slider, self.opacity_value_label = self._build_row(
-            content_layout,
-            self.tr("Opacity"),
-            self.OPACITY_MIN,
-            self.OPACITY_MAX,
-            self.OPACITY_DEFAULT,
-            self.tr(
-                "Adjust the transparency of annotation shapes and masks. "
-                "Label text remains fully visible."
-            ),
-            display="percent",
+        self.opacity_slider, self.opacity_value_label, self.opacity_pin = (
+            self._build_row(
+                content_layout,
+                self.tr("Fill Opacity"),
+                self.OPACITY_MIN,
+                self.OPACITY_MAX,
+                self.OPACITY_DEFAULT,
+                self.tr(
+                    "Adjust annotation fills relative to their default opacity. "
+                    "Outlines, control points, and text remain visible."
+                ),
+                display="opacity",
+            )
         )
-        self.brightness_slider, self.brightness_value_label = self._build_row(
+        (
+            self.brightness_slider,
+            self.brightness_value_label,
+            self.brightness_pin,
+        ) = self._build_row(
             content_layout,
             self.tr("Brightness"),
             self.BC_MIN,
@@ -261,15 +303,92 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
             self.tr("Adjust the brightness of the underlying image."),
             display="factor",
         )
-        self.contrast_slider, self.contrast_value_label = self._build_row(
-            content_layout,
-            self.tr("Contrast"),
-            self.BC_MIN,
-            self.BC_MAX,
-            self.BC_DEFAULT,
-            self.tr("Adjust the contrast of the underlying image."),
-            display="factor",
+        self.contrast_slider, self.contrast_value_label, self.contrast_pin = (
+            self._build_row(
+                content_layout,
+                self.tr("Contrast"),
+                self.BC_MIN,
+                self.BC_MAX,
+                self.BC_DEFAULT,
+                self.tr("Adjust the contrast of the underlying image."),
+                display="factor",
+            )
         )
+        self.grid_settings = QtCore.QSettings("anylabeling", "anylabeling")
+        (
+            self.grid_opacity,
+            self.grid_opacity_value_label,
+            self.grid_settings_button,
+        ) = self._build_row(
+            content_layout,
+            self.tr("Image grid"),
+            0,
+            100,
+            0,
+            self.tr("Adjust image grid opacity."),
+            settings=True,
+        )
+        self.grid_popup = GridSettingsPopup(self)
+        self.grid_popup.setObjectName("grid_settings_popup")
+        theme = LIGHT
+        self.grid_popup.setStyleSheet(
+            f"#grid_settings_popup QLabel {{ color: {theme['text']};"
+            " background: transparent; }"
+        )
+        popup_layout = QtWidgets.QGridLayout(self.grid_popup)
+        popup_layout.setContentsMargins(21, 12, 12, 12)
+        popup_layout.setHorizontalSpacing(12)
+        popup_layout.setVerticalSpacing(8)
+        self.grid_size = QtWidgets.QSpinBox(self.grid_popup)
+        self.grid_size.setRange(5, 1000)
+        self.grid_size.setStyleSheet(
+            get_spinbox_style(theme)
+            + f"QSpinBox {{ color: {theme['text']}; }}"
+        )
+        self.grid_color = QtWidgets.QComboBox(self.grid_popup)
+        self.grid_color.setStyleSheet(get_settings_combo_style("light"))
+        for color, label in (
+            ("white", self.tr("White")),
+            ("black", self.tr("Black")),
+            ("red", self.tr("Red")),
+            ("green", self.tr("Green")),
+            ("blue", self.tr("Blue")),
+        ):
+            self.grid_color.addItem(label, color)
+        self.grid_labels = QtWidgets.QCheckBox(
+            self.tr("Show grid labels"), self.grid_popup
+        )
+        self.grid_labels.setStyleSheet(
+            f"QCheckBox {{ color: {theme['text']};"
+            " background: transparent; spacing: 6px; }"
+            + get_checkbox_indicator_style("light")
+        )
+        self.grid_size.setValue(100)
+        color = self.grid_settings.value("grid/color", "white", type=str)
+        self.grid_color.setCurrentIndex(
+            max(0, self.grid_color.findData(color))
+        )
+        enabled = self.grid_settings.value("grid/enabled", False, type=bool)
+        self.grid_opacity.setValue(
+            self.grid_settings.value("grid/opacity", 100, type=int)
+            if enabled
+            else 0
+        )
+        self._set_value_text(
+            self.grid_opacity_value_label, self.grid_opacity.value()
+        )
+        self.grid_labels.setChecked(False)
+        popup_layout.addWidget(QtWidgets.QLabel(self.tr("Size:")), 0, 0)
+        popup_layout.addWidget(self.grid_size, 0, 1)
+        popup_layout.addWidget(QtWidgets.QLabel(self.tr("Color:")), 1, 0)
+        popup_layout.addWidget(self.grid_color, 1, 1)
+        popup_layout.addWidget(self.grid_labels, 2, 1)
+        self.grid_settings_button.clicked.connect(self._toggle_grid_popup)
+        self.grid_size.valueChanged.connect(self._on_grid_changed)
+        self.grid_color.currentIndexChanged.connect(self._on_grid_changed)
+        self.grid_opacity.valueChanged.connect(self._on_grid_changed)
+        self.grid_labels.toggled.connect(self._on_grid_changed)
+
         self.equalize_button = self._build_toggle_row(
             content_layout,
             self.tr("Levels"),
@@ -279,7 +398,33 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
                 "easier to see. Display only; colors may look less saturated."
             ),
         )
+
+        status_layout = QtWidgets.QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(4)
+        status_label = QtWidgets.QLabel(self.tr("Status"))
+        status_label.setFixedWidth(64)
+        status_label.setStyleSheet(self._LABEL_CSS)
+        status_layout.addWidget(status_label)
+        self.status_buttons = {}
+        for status, text, name in (
+            (False, self.tr("Pending"), "pending"),
+            (True, self.tr("Passed"), "passed"),
+            ("failed", self.tr("Failed"), "failed"),
+        ):
+            button = QtWidgets.QRadioButton(text)
+            button.setObjectName(name)
+            button.clicked.connect(
+                lambda _checked, value=status: self.status_changed.emit(value)
+            )
+            if self.status_buttons:
+                status_layout.addStretch()
+            self.status_buttons[status] = button
+            status_layout.addWidget(button)
+        content_layout.addLayout(status_layout)
+        self.set_status(False)
         layout.addWidget(self.content_widget)
+        layout.addLayout(header_layout)
 
         self.setLayout(layout)
         self.adjustSize()
@@ -295,9 +440,81 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         self.contrast_slider.valueChanged.connect(self._on_bc_changed)
         self.equalize_button.toggled.connect(self.equalize_changed)
 
+    def _on_grid_changed(self, *_):
+        enabled = self.grid_opacity.value() > 0
+        size = self.grid_size.value()
+        color = self.grid_color.currentData()
+        opacity = self.grid_opacity.value()
+        labels = self.grid_labels.isChecked()
+        for key, value in (
+            ("enabled", enabled),
+            ("size", size),
+            ("color", color),
+            ("opacity", opacity),
+            ("labels", labels),
+        ):
+            self.grid_settings.setValue(f"grid/{key}", value)
+        self._set_value_text(self.grid_opacity_value_label, opacity)
+        self.grid_changed.emit(enabled, size, color, opacity, labels)
+
+    def _toggle_grid_popup(self):
+        if self.grid_popup.isVisible():
+            self.grid_popup.hide()
+            return
+        self.grid_popup.adjustSize()
+        self.grid_popup.layout().activate()
+        button = self.grid_settings_button
+        anchor = button.mapToGlobal(
+            QtCore.QPoint(button.width(), button.height() // 2)
+        )
+        screen = QtGui.QGuiApplication.screenAt(anchor)
+        self.grid_popup.arrow_y = self.grid_color.geometry().center().y()
+        top = anchor.y() - self.grid_popup.arrow_y
+        if screen is not None:
+            bounds = screen.availableGeometry()
+            top = max(
+                bounds.top(),
+                min(top, bounds.bottom() - self.grid_popup.height() + 1),
+            )
+        right = self.mapToGlobal(QtCore.QPoint(self.width(), 0)).x()
+        self.grid_popup.move(right - 1, top)
+        self.grid_popup.show()
+        self.grid_popup.arrow_y = self.grid_color.geometry().center().y()
+        actual_top = self.grid_popup.mapToGlobal(QtCore.QPoint()).y()
+        offset = anchor.y() - actual_top - self.grid_popup.arrow_y
+        if screen is not None:
+            offset = max(
+                bounds.top() - actual_top,
+                min(
+                    offset,
+                    bounds.bottom()
+                    + 1
+                    - self.grid_popup.height()
+                    - actual_top,
+                ),
+            )
+        self.grid_popup.move(self.grid_popup.x(), self.grid_popup.y() + offset)
+        self.grid_popup.update()
+
+    def _reset_grid(self):
+        widgets = (
+            self.grid_opacity,
+            self.grid_size,
+            self.grid_color,
+            self.grid_labels,
+        )
+        blockers = [QtCore.QSignalBlocker(widget) for widget in widgets]
+        self.grid_opacity.setValue(0)
+        self.grid_size.setValue(100)
+        self.grid_color.setCurrentIndex(self.grid_color.findData("white"))
+        self.grid_labels.setChecked(False)
+        del blockers
+        self._on_grid_changed()
+
     def _build_stylesheet(self):
         """Translucent white card with theme-blue sliders."""
-        primary = get_theme().get("primary", "#0071e3")
+        theme = get_theme()
+        primary = theme["primary"]
         return f"""
         #canvas_adjustment {{
             background: rgba(255, 255, 255, 220);
@@ -306,6 +523,32 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         }}
         #canvas_adjustment[collapsed="true"] {{
             background: transparent;
+        }}
+        #canvas_adjustment QRadioButton {{
+            color: #333;
+            font-size: 11px;
+            background: transparent;
+            spacing: 3px;
+        }}
+        #canvas_adjustment QRadioButton::indicator {{
+            width: 12px;
+            height: 12px;
+            border: 1px solid #666;
+            border-radius: 7px;
+            background: white;
+        }}
+        #canvas_adjustment QRadioButton::indicator:checked {{
+            border: 4px solid {primary};
+            width: 6px;
+            height: 6px;
+            border-radius: 7px;
+            background: white;
+        }}
+        #canvas_adjustment QRadioButton#passed::indicator:checked {{
+            border-color: {theme["success"]};
+        }}
+        #canvas_adjustment QRadioButton#failed::indicator:checked {{
+            border-color: {theme["error"]};
         }}
         #canvas_adjustment QSlider::groove:horizontal {{
             height: 4px;
@@ -335,6 +578,7 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         default,
         tooltip,
         display="percent",
+        settings=False,
     ):
         """Create one labelled slider row and append it to ``layout``."""
         row = QtWidgets.QHBoxLayout()
@@ -364,28 +608,62 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         value_label.setToolTip(tooltip)
         self._set_value_text(value_label, default)
 
-        reset_btn = QtWidgets.QPushButton("↺")
+        reset_btn = QtWidgets.QToolButton()
         reset_btn.setFixedSize(22, 20)
-        reset_btn.setStyleSheet(self._RESET_CSS)
+        reset_btn.setIcon(get_icon("rotate-cw", "#333333", "#333333"))
+        reset_btn.setIconSize(QtCore.QSize(14, 14))
+        reset_btn.setStyleSheet(self._ROW_BUTTON_CSS)
         reset_btn.setToolTip(self.tr("Reset to default"))
         reset_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        reset_btn.clicked.connect(
-            lambda _=False, s=slider: s.setValue(default)
+        if settings:
+            reset_btn.clicked.connect(self._reset_grid)
+        else:
+            reset_btn.clicked.connect(
+                lambda _=False, s=slider: s.setValue(default)
+            )
+
+        pin_btn = QtWidgets.QToolButton()
+        pin_btn.setCheckable(not settings)
+        pin_btn.setFixedSize(22, 20)
+        pin_btn.setIconSize(QtCore.QSize(14, 14))
+        pin_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        pin_btn.setToolTip(
+            self.tr("Grid settings")
+            if settings
+            else self.tr("Keep this value when switching images")
         )
+        pin_btn.setAccessibleName(pin_btn.toolTip())
+        pin_btn.setStyleSheet(self._ROW_BUTTON_CSS)
+        if settings:
+            pin_btn.setIcon(get_icon("settings", "#333333", "#333333"))
+        else:
+            pin_btn.setIcon(get_icon("unlock", "#333333", "#333333"))
+            pin_btn.toggled.connect(
+                lambda checked: pin_btn.setIcon(
+                    get_icon(
+                        "lock" if checked else "unlock", "#333333", "#333333"
+                    )
+                )
+            )
 
         row.addWidget(name_label)
         row.addWidget(slider)
         row.addWidget(value_label)
         row.addWidget(reset_btn)
+        row.addWidget(pin_btn)
+        row.addSpacing(4)
         layout.addLayout(row)
-        return slider, value_label
+        return slider, value_label, pin_btn
 
     def _toggle_css(self):
-        """Reset-button look, filled with the theme color while checked."""
+        """Small grey pill button, filled with the theme color while checked."""
         primary = get_theme().get("primary", "#0071e3")
         return (
-            self._RESET_CSS
-            + "QPushButton { padding: 0 8px; }"
+            "QPushButton { background: rgba(120, 120, 120, 60);"
+            " border-radius: 3px; font-size: 11px; color: #333;"
+            " padding: 0 8px; }"
+            "QPushButton:hover { background: rgba(120, 120, 120, 110); }"
+            "QPushButton:pressed { background: rgba(120, 120, 120, 150); }"
             + f"QPushButton:checked {{ background: {primary}; color: white; }}"
         )
 
@@ -418,6 +696,8 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         """Format the value for display based on the label's display mode."""
         if label.property("display") == "factor":
             label.setText(f"{value / 50:.2f}")
+        elif label.property("display") == "opacity":
+            label.setText(f"{value}%")
         else:
             label.setText(f"{value}%")
 
@@ -441,13 +721,11 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         )
 
     def _toggle_collapsed(self):
+        self.grid_popup.hide()
         self._collapsed = not self._collapsed
         self.setProperty("collapsed", self._collapsed)
-        self.title_label.setVisible(not self._collapsed)
         self.content_widget.setVisible(not self._collapsed)
-        margins = (4, 4, 4, 4) if self._collapsed else (10, 8, 10, 8)
-        self.layout().setContentsMargins(*margins)
-        icon = "caret-down" if self._collapsed else "caret-up"
+        icon = "caret-up" if self._collapsed else "caret-down"
         self.toggle_button.setIcon(new_icon(icon, "svg"))
         tooltip = (
             self.tr("Expand adjustments")
@@ -460,6 +738,9 @@ class CanvasAdjustmentWidget(QtWidgets.QWidget):
         self.layout().activate()
         self.adjustSize()
         self.geometry_changed.emit()
+
+    def set_status(self, status):
+        self.status_buttons[status].setChecked(True)
 
     def set_opacity(self, value):
         """Set the opacity slider without emitting ``opacity_changed``."""

@@ -54,6 +54,19 @@ class TestSettingsDialogLayout(unittest.TestCase):
         self._resources.append((dialog, controller))
         return dialog
 
+    def test_wheel_navigation_mode_choices(self):
+        dialog = self._create_dialog()
+        dialog._render_primary("Canvas")
+        combos = dialog.findChildren(QtWidgets.QComboBox)
+        editor = next(
+            combo for combo in combos
+            if combo.findData("traditional") >= 0
+        )
+        self.assertEqual(editor.currentData(), "direct")
+        self.assertEqual(editor.itemText(editor.findData("direct")), "Direct Zoom")
+        editor.setCurrentIndex(editor.findData("traditional"))
+        self.assertEqual(editor.currentData(), "traditional")
+
     def test_general_uses_viewport_gap_and_fixed_bottom_height(self):
         dialog = self._create_dialog()
         dialog._render_primary("General")
@@ -123,14 +136,18 @@ class TestSettingsDialogLayout(unittest.TestCase):
         dialog._render_primary("Canvas")
         self.app.processEvents()
 
-        spinbox = next(
+        spinboxes = [
             editor
             for editor in dialog.content_body.findChildren(QtWidgets.QSpinBox)
             if editor.minimum() == 6 and editor.maximum() == 48
+        ]
+        self.assertEqual(len(spinboxes), 2)
+        for spinbox in spinboxes:
+            self.assertEqual(spinbox.value(), 8)
+            spinbox.setValue(12)
+        self.assertEqual(
+            dialog._controller.get_value("canvas.attributes.font_size"), 12
         )
-        self.assertEqual(spinbox.value(), 8)
-
-        spinbox.setValue(12)
         self.assertEqual(
             dialog._controller.get_value("canvas.label_font_size"), 12
         )
@@ -208,8 +225,7 @@ class TestSettingsDialogLayout(unittest.TestCase):
         self.app.processEvents()
 
         spinboxes = dialog.content_body.findChildren(QtWidgets.QSpinBox)
-        self.assertEqual(len(spinboxes), 1)
-        self.assertEqual(spinboxes[0].value(), 256)
+        self.assertEqual(sorted(box.value() for box in spinboxes), [10, 256])
 
     def test_general_font_selector_lists_available_font_families(self):
         dialog = self._create_dialog()

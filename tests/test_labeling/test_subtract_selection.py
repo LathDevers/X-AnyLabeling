@@ -84,6 +84,23 @@ class TestSubtractSelection(unittest.TestCase):
         self.assertEqual(len(self.canvas.shapes_backups), backups + 1)
         self.widget.label_list.clear.assert_called_once_with()
 
+    def test_largest_piece_keeps_relation_identity(self):
+        self.target.other_data["shape_id"] = "leaf-id"
+        identity = self.target._relation_identity
+        self.cutter.points = [
+            QtCore.QPointF(x, y)
+            for x, y in [(70, -10), (80, -10), (80, 110), (70, 110)]
+        ]
+        self.canvas.selected_shapes = [self.target, self.cutter]
+
+        LabelingWidget.subtract_selection(self.widget)
+
+        large, small = self.canvas.shapes[0], self.canvas.shapes[1]
+        self.assertEqual(large.other_data.get("shape_id"), "leaf-id")
+        self.assertEqual(large._relation_identity, identity)
+        self.assertNotIn("shape_id", small.other_data)
+        self.assertNotEqual(small._relation_identity, identity)
+
     def test_enclosed_cutter_makes_a_hole(self):
         inner = make_shape("hole", [(30, 30), (70, 30), (70, 70), (30, 70)])
         self.canvas.shapes.append(inner)

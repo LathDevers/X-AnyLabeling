@@ -18,7 +18,7 @@
     <a href="https://modelscope.cn/collections/X-AnyLabeling-7b0e1798bcda43"><img src="https://img.shields.io/badge/modelscope-X--AnyLabeling-6750FF?link=https%3A%2F%2Fmodelscope.cn%2Fcollections%2FX-AnyLabeling-7b0e1798bcda43"></a>
 </p>
 
-<img src="https://github.com/user-attachments/assets/aa819dae-e38c-4b1c-a4a7-53a873d870e3" alt="X-AnyLabeling interface" width="100%" />
+<img src="assets/resources/interface.webp" alt="X-AnyLabeling interface" width="100%" />
 
 <p align="center">
   <a href="https://xanylabeling.com/docs/x-anylabeling/point_cloud" target="_blank"><img src="assets/resources/pointcloud/pointcloud-3d-det.png" alt="3D Point Cloud Detection" width="50%" /></a><a href="https://xanylabeling.com/docs/x-anylabeling/point_cloud" target="_blank"><img src="assets/resources/pointcloud/pointcloud-3d-seg.png" alt="3D Point Cloud Segmentation" width="50%" /></a>
@@ -28,7 +28,18 @@
 
 ## 🥳 What's New
 
-- `2026-10-01`: Add [3D point cloud annotation](./docs/en/point_cloud.md), supporting 3D point cloud detection and segmentation.
+- `2026-11-04`: Add support for [SAM 3.1 Video](./examples/interactive_video_object_segmentation/sam3/README.md) with text-prompted multi-object tracking and interactive point segmentation.
+- `2026-11-03`: Add an adjustable image grid with optional cell labels for inspecting annotations.
+- `2026-11-01`: Add support for the [RelateAnything](./examples/relation/relateanything/README.md) object relation prediction model.
+- `2026-10-31`: Add object-level multi-task attribute annotation with AI-assisted labeling and concurrent inference.
+- `2026-10-30`: Add support for the [Unlimited-OCR-2](./examples/document_parsing/unlimited_ocr_2/README.md) model with image and PDF document parsing with multi-page context.
+- `2026-10-28`: Add support for the [WeVisOne-VL](./examples/vision_foundation/wevisone_vl/README.md) model with detection, referring localization, pointing, counting, OCR, text grounding, segmentation, text and box matting, visual prompting, and freeform instructions.
+- `2026-10-28`: Add support for the [Xiaomi-Lens-0](./examples/vision_foundation/xiaomi_lens/README.md) model with referring comprehension and segmentation, multi-instance grounding, reasoning segmentation, embodied referring, and fine-grained perception.
+- `2026-10-27`: Add [annotation display modes](https://xanylabeling.com/docs/x-anylabeling/user_guide#33-shape-display): color by label, instance, or group, and a binary mask view with white foreground on a black background.
+- `2026-10-27`: Add square annotation support.
+- `2026-10-24`: Add support for smooth zoom, free panning, and boundary clipping on the canvas.
+- `2026-10-18`: Add support for [GroundingPI, GroundAnything, and GroundAnything-VLM](./examples/vision_foundation/groundingpi/README.md) with detection, grounding, referring and category-based pointing, OCR, document layout, GUI grounding, and visual prompting.
+- `2026-10-01`: Add [3D point cloud annotation](https://xanylabeling.com/docs/x-anylabeling/point_cloud), supporting 3D point cloud detection and segmentation.
 - `2026-08-19`: Add support for [image tagging](https://xanylabeling.com/docs/x-anylabeling/user_guide#37-image-tags), with tag creation, editing, reordering, and batch deletion.
 - `2026-08-12`: Add support for [D-FINE-seg](https://github.com/ArgoHA/D-FINE-seg) instance segmentation models.
 - `2026-08-08`: Add support for the [RT-DETRv2-OBB](https://xanylabeling.com/examples/detection/obb) rotated object detection model.
@@ -46,7 +57,7 @@
 
 * Unified support for annotating and processing text, image, video, point cloud, and multimodal data.
 * Covers tasks such as 2D image classification, object detection, instance segmentation, pose estimation, oriented object detection, multi-object tracking, optical character recognition, lane annotation, image captioning, visual question answering, document parsing, and 3D point clouds.
-* Provides polygons, rectangles, cuboids, rotated boxes, quadrilaterals, circles, lines, polylines, points, masks, and task-specific tools for text detection, text recognition, and KIE.
+* Provides polygons, rectangles, cuboids, rotated boxes, quadrilaterals, circles, lines, polylines, points, masks, and task-specific tools for text detection, text recognition, relation recognition, and KIE.
 * Integrates a wide range of state-of-the-art deep learning models for AI-assisted annotation, automated labeling, and batch dataset prediction.
 * Supports both local and remote inference through engines and serving frameworks such as `ONNX Runtime`, `TensorRT`, `OpenCV DNN`, `vLLM`, and `SGLang`.
 * Supports importing and exporting formats such as `COCO`, `VOC`, `YOLO`, `DOTA`, `MOT`, `MASK`, `PPOCR`, `MMGD`, `VLM-R1`, and `ShareGPT`.
@@ -63,21 +74,22 @@
 | 🎨 Semantic Segmentation | U-Net |
 | 🏃 Pose Estimation | YOLOv8-Pose, YOLO11-Pose, YOLO26-Pose, DWPose, RTMO |
 | 😀 Face Estimation | SCRFD, YOLOv6Lite-Face |
-| 👣 Tracking | TrackTrack, Bot-SORT, ByteTrack, SAM2/3-Video |
+| 👣 Tracking | TrackTrack, Bot-SORT, ByteTrack, SAM2/3/3.1-Video |
 | 🔄 Rotated Object Detection | YOLOv5-Obb, YOLOv8-Obb, YOLO11-Obb, YOLO26-Obb, RT-DETRv2-OBB |
-| 📏 Depth Estimation | Depth Anything |
-| 🧩 Segment Anything | SAM 1/2/3, SAM-HQ, SAM-Med2D, EdgeSAM, EfficientViT-SAM, MobileSAM |
+| 📏 Depth Estimation | DepthAnything 1/2 |
+| 🔗 Relation Recognition | RelateAnything |
+| 🧩 Segment Anything | SAM 1/2/3/3.1, SAM-HQ, SAM-Med2D, EdgeSAM, EfficientViT-SAM, MobileSAM |
 | ✂️ Image Matting | RMBG 1.4/2.0 |
 | 💡 Proposal | UPN |
 | 🏷️ Tagging | RAM, RAM++ |
 | 📄 OCR | PP-OCRv4, PP-OCRv5, PP-OCRv6 |
 | 🧾 Layout Analysis | PP-DocLayoutV3 |
-| 📑 Document Parsing | PaddleOCR-VL, PaddleOCR-VL-1.6 |
-| 🗣️ Vision Foundation Models | Rex-Omni, Florence2 |
+| 📑 Document Parsing | PaddleOCR-VL, PaddleOCR-VL-1.6, Unlimited-OCR-2 |
+| 🗣️ Vision Foundation Models | Rex-Omni, Florence2, LocateAnything, GroundingPI, GroundAnything, GroundAnything-VLM, Xiaomi-Lens-0, WeVisOne-VL |
 | 👁️ Vision Language Models | Qwen3-VL, Gemini, ChatGPT, GLM |
 | 🛣️ Lane Detection | CLRNet |
 | 🔢 Object Counting | CountGD, GeCO, GeCo2 |
-| 📍 Grounding | Grounding DINO, YOLO-World, YOLOE, SAM 3, LocateAnything |
+| 📍 Grounding | Grounding DINO, YOLO-World, YOLOE, SAM 3 |
 | 📚 Other | 👉 [model_zoo](./docs/en/model_zoo.md) 👈 |
 
 ## Docs
@@ -91,7 +103,7 @@
 6. [VQA](./docs/en/vqa.md)
 7. [Image Classifier](./docs/en/image_classifier.md)
 8. [Video Classifier](./docs/en/video_classifier.md)
-9. [Document Parsing and Intelligent Text Recognition](./docs/en/paddle_ocr.md)
+9. [Document Parser](./docs/en/document_parser.md)
 10. [3D Point Cloud Annotation](./docs/en/point_cloud.md)
 
 ## Examples
@@ -116,6 +128,9 @@
 - [OCR](./examples/optical_character_recognition/)
   - [Text Recognition](./examples/optical_character_recognition/text_recognition/)
   - [Key Information Extraction](./examples/optical_character_recognition/key_information_extraction/README.md)
+- [Document Parsing](./examples/document_parsing/)
+  - [PaddleOCR-VL](./examples/document_parsing/paddleocr_vl/README.md)
+  - [Unlimited-OCR-2](./examples/document_parsing/unlimited_ocr_2/README.md)
 - [MOT](./examples/multiple_object_tracking/README.md)
   - [Tracking by HBB Object Detection](./examples/multiple_object_tracking/README.md)
   - [Tracking by OBB Object Detection](./examples/multiple_object_tracking/README.md)
@@ -123,19 +138,24 @@
   - [Tracking by Pose Estimation](./examples/multiple_object_tracking/README.md)
 - [iVOS](./examples/interactive_video_object_segmentation)
   - [SAM2-Video](./examples/interactive_video_object_segmentation/sam2/README.md)
-  - [SAM3-Video](./examples/interactive_video_object_segmentation/sam3/README.md)
+  - [SAM3 / SAM3.1-Video](./examples/interactive_video_object_segmentation/sam3/README.md)
 - [Matting](./examples/matting/)
   - [Image Matting](./examples/matting/image_matting/README.md)
-- [Vision-Language](./examples/vision_language/)
-  - [Rex-Omni](./examples/vision_language/rexomni/README.md)
-  - [Florence 2](./examples/vision_language/florence2/README.md)
+- [Relation](./examples/relation/)
+  - [RelateAnything](./examples/relation/relateanything/README.md)
+- [VFM](./examples/vision_foundation/)
+  - [Rex-Omni](./examples/vision_foundation/rexomni/README.md)
+  - [Florence 2](./examples/vision_foundation/florence2/README.md)
+  - [LocateAnything](./examples/vision_foundation/locateanything/README.md)
+  - [WeVisOne-VL](./examples/vision_foundation/wevisone_vl/README.md)
+  - [Xiaomi-Lens-0](./examples/vision_foundation/xiaomi_lens/README.md)
+  - [GroundingPI / GroundAnything / GroundAnything-VLM](./examples/vision_foundation/groundingpi/README.md)
 - [Counting](./examples/counting/)
   - [GeCo](./examples/counting/geco/README.md)
   - [GeCo2](./examples/counting/geco2/README.md)
 - [Grounding](./examples/grounding/)
   - [YOLOE](./examples/grounding/yoloe/README.md)
   - [SAM 3](./examples/grounding/sam3/README.md)
-  - [LocateAnything](./examples/grounding/locateanything/README.md)
 - [Training](./examples/training/)
   - [Ultralytics](./examples/training/ultralytics/README.md)
 

@@ -464,7 +464,7 @@ class ChatbotDialog(QDialog):
             import_media_btn_modes, import_media_btn_names
         ):
             btn = QPushButton()
-            icon_name = "folder-chatbot" if btn_mode == "folder" else btn_mode
+            icon_name = "open" if btn_mode == "folder" else btn_mode
             btn.setIcon(QIcon(new_icon(icon_name, "svg")))
             btn.setFixedSize(*ICON_SIZE_NORMAL)
             btn.setStyleSheet(ChatbotDialogStyle.get_button_style())
@@ -1928,7 +1928,8 @@ class ChatbotDialog(QDialog):
 
                     except Exception as e:
                         logger.error(
-                            self.tr(f"Error processing {json_file}: {str(e)}")
+                            self.tr("Error processing %s: %s")
+                            % (json_file, str(e))
                         )
 
                 if not export_data:
@@ -1960,17 +1961,18 @@ class ChatbotDialog(QDialog):
                 QMessageBox.information(
                     self,
                     self.tr("Export Successful"),
-                    self.tr(f"Dataset exported successfully to:\n{zip_path}"),
+                    self.tr("Dataset exported successfully to:\n%s")
+                    % zip_path,
                 )
 
             except Exception as e:
                 logger.error(
-                    self.tr(f"An error occurred during export:\n{str(e)}")
+                    self.tr("An error occurred during export:\n%s") % str(e)
                 )
                 QMessageBox.critical(
                     self,
                     self.tr("Export Error"),
-                    self.tr(f"An error occurred during export:\n{str(e)}"),
+                    self.tr("An error occurred during export:\n%s") % str(e),
                 )
                 if os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir)
@@ -2124,12 +2126,12 @@ class ChatbotDialog(QDialog):
 
             except Exception as e:
                 logger.error(
-                    self.tr(f"An error occurred during import:\n{str(e)}")
+                    self.tr("An error occurred during import:\n%s") % str(e)
                 )
                 QMessageBox.critical(
                     self,
                     self.tr("Import Error"),
-                    self.tr(f"An error occurred during import:\n{str(e)}"),
+                    self.tr("An error occurred during import:\n%s") % str(e),
                 )
 
         import_btn.clicked.connect(import_dataset)
@@ -2653,6 +2655,9 @@ class ChatbotDialog(QDialog):
                         if tooltip:
                             tooltip.hide()
 
+    def reject(self):
+        self.close()
+
     def closeEvent(self, event):
         """Handle dialog close event properly"""
         self.hideAllTooltips()
@@ -2661,7 +2666,8 @@ class ChatbotDialog(QDialog):
         if self.loading_timer and self.loading_timer.isActive():
             self.loading_timer.stop()
 
-        super().closeEvent(event)
+        event.accept()
+        super().reject()
 
     def wheelEvent(self, event):
         """Handle wheel events at dialog level"""
