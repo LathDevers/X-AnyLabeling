@@ -15,6 +15,8 @@ _LEGACY_KEY_MAP = {
     "show_cross_line": "canvas.crosshair.show",
 }
 _LEGACY_DROP_KEYS = {"ui"}
+# Shortcuts that accept a list of key sequences instead of a single one
+MULTI_SHORTCUT_KEYS = frozenset({"zoom_in", "delete_polygon"})
 
 
 def set_work_directory(directory: str) -> None:
@@ -121,7 +123,7 @@ def normalize_user_config(config):
         ):
             shortcuts["open_image_classifier"] = open_classifier
         for key, value in list(shortcuts.items()):
-            if key == "zoom_in":
+            if key in MULTI_SHORTCUT_KEYS:
                 shortcuts[key] = _normalize_multi_shortcut_value(value)
             else:
                 shortcuts[key] = _normalize_shortcut_value(value)

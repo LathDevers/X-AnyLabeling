@@ -182,7 +182,8 @@ shortcuts:
   edit_brush_mode: Shift+B
   edit_by_rectangle: Shift+R
   edit_by_polygon: Shift+O
-  delete_polygon: Delete
+  edit_keep_holes: Shift+H
+  delete_polygon: [Delete, Ctrl+Backspace]
   duplicate_polygon: Ctrl+D
   copy_polygon: Ctrl+C
   paste_polygon: Ctrl+V
@@ -207,7 +208,9 @@ shortcuts:
   show_labels: Ctrl+L
   show_linking: Ctrl+K
   show_attributes: Ctrl+Shift+L
+  toggle_shape_tags: Ctrl+Shift+H
   union_selected_shapes: Ctrl+Shift+M
+  subtract_selected_shapes: Ctrl+Shift+X
   toggle_auto_use_last_label: Ctrl+Y
   toggle_auto_use_last_gid: Ctrl+Shift+G
   toggle_visibility_shapes: Ctrl+H

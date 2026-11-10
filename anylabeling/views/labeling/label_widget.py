@@ -71,6 +71,11 @@ from .utils.file_search import (
     matches_filename,
     matches_label_attribute,
 )
+from .utils.geometry import (
+    AREA_SHAPE_TYPES,
+    shape_geometry,
+    subtract_geometry,
+)
 from .utils.qt import new_icon_path
 from .utils.theme import get_theme
 from .pointcloud.icons import get_icon
@@ -130,6 +135,26 @@ def _format_label_list_text(label, group_id):
 
 def _set_label_list_item_lock(item, locked):
     item.set_locked(locked)
+
+
+def _can_subtract_shapes(shapes):
+    """Whether the last shape can cut every unlocked polygon selected before it."""
+    return (
+        len(shapes) >= 2
+        and shapes[-1].shape_type in AREA_SHAPE_TYPES
+        and all(
+            shape.shape_type == "polygon" and not shape.locked
+            for shape in shapes[:-1]
+        )
+    )
+
+
+def _shape_geometry(shape):
+    return shape_geometry(
+        shape.shape_type,
+        [(p.x(), p.y()) for p in shape.points],
+        [[(p.x(), p.y()) for p in ring] for ring in shape.holes],
+    )
 
 
 def _find_next_label_loop_shape(shapes, start_index, canvas_shapes):
@@ -507,6 +532,9 @@ class LabelingWidget(LabelDialog):
         self.canvas.brush_mode_changed.connect(self.on_brush_mode_changed)
         self.canvas.brush_history_changed.connect(
             lambda can_undo: self.actions.undo.setEnabled(can_undo)
+        )
+        self.canvas.brush_keep_holes_changed.connect(
+            lambda keep: self.actions.edit_keep_holes.setChecked(keep)
         )
         # [Feature] support for automatically switching to editing mode
         # when the cursor moves over an object
@@ -969,6 +997,19 @@ class LabelingWidget(LabelDialog):
             checkable=True,
             checked=False,
         )
+        edit_keep_holes = action(
+            self.tr("Keep Holes"),
+            self.canvas.set_brush_keep_holes,
+            shortcuts.get("edit_keep_holes", "Shift+H"),
+            None,
+            self.tr(
+                "While editing a polygon's mask, keep the holes cut into it "
+                "instead of filling them"
+            ),
+            enabled=False,
+            checkable=True,
+            checked=False,
+        )
         group_selected_shapes = action(
             self.tr("Group Selected Shapes"),
             self.group_selected_shapes,
@@ -1133,6 +1174,17 @@ class LabelingWidget(LabelDialog):
             shortcuts["union_selected_shapes"],
             icon="union",
             tip=self.tr("Union multiple selected rectangle shapes"),
+            enabled=False,
+        )
+        subtract_selection = action(
+            self.tr("Subtract Selection"),
+            self.subtract_selection,
+            shortcuts.get("subtract_selected_shapes", "Ctrl+Shift+X"),
+            None,
+            self.tr(
+                "Select the polygons to split first, then the cutter last; "
+                "each polygon is replaced by its parts outside the cutter"
+            ),
             enabled=False,
         )
         toggle_shape_lock = action(
@@ -1367,6 +1419,19 @@ class LabelingWidget(LabelDialog):
             checked=self._config["show_labels"],
             enabled=True,
             auto_trigger=True,
+        )
+        hide_shape_tags = action(
+            self.tr("Hide Shape Tags"),
+            self.set_hide_shape_tags,
+            shortcut=shortcuts.get("toggle_shape_tags", "Ctrl+Shift+H"),
+            tip=self.tr(
+                "Hide all texts, labels, scores, attributes and degrees on "
+                "the canvas (hold H to hide them temporarily)"
+            ),
+            icon=None,
+            checkable=True,
+            checked=False,
+            enabled=True,
         )
         show_scores = action(
             self.tr("Show Scores"),
@@ -1867,6 +1932,7 @@ class LabelingWidget(LabelDialog):
             visibility_shapes_mode=visibility_shapes_mode,
             run_all_images=run_all_images,
             union_selection=union_selection,
+            subtract_selection=subtract_selection,
             delete=delete,
             edit=edit,
             duplicate=duplicate,
@@ -1887,6 +1953,7 @@ class LabelingWidget(LabelDialog):
             edit_brush_mode=edit_brush_mode,
             edit_by_rectangle_mode=edit_by_rectangle_mode,
             edit_by_polygon_mode=edit_by_polygon_mode,
+            edit_keep_holes=edit_keep_holes,
             create_rectangle_mode=create_rectangle_mode,
             create_cuboid_mode=create_cuboid_mode,
             create_rotation_mode=create_rotation_mode,
@@ -1956,6 +2023,7 @@ class LabelingWidget(LabelDialog):
             show_masks=show_masks,
             show_texts=show_texts,
             show_labels=show_labels,
+            hide_shape_tags=hide_shape_tags,
             show_scores=show_scores,
             show_degrees=show_degrees,
             show_attributes=show_attributes,
@@ -2031,11 +2099,13 @@ class LabelingWidget(LabelDialog):
                 edit_brush_mode,
                 edit_by_rectangle_mode,
                 edit_by_polygon_mode,
+                edit_keep_holes,
                 edit,
                 toggle_shape_lock,
                 None,
                 copy_coordinates,
                 union_selection,
+                subtract_selection,
                 duplicate,
                 copy,
                 paste,
@@ -2270,6 +2340,7 @@ class LabelingWidget(LabelDialog):
                 show_attributes,
                 show_linking,
                 show_groups,
+                hide_shape_tags,
                 hide_selected_polygons,
                 show_hidden_polygons,
                 group_selected_shapes,
@@ -3139,6 +3210,8 @@ class LabelingWidget(LabelDialog):
             self.actions.edit_brush_mode,
             self.actions.edit_by_rectangle_mode,
             self.actions.edit_by_polygon_mode,
+            self.actions.edit_keep_holes,
+            self.actions.subtract_selection,
         )
         utils.add_actions(self.menus.edit, actions + self.actions.editMenu)
 
@@ -3491,6 +3564,8 @@ class LabelingWidget(LabelDialog):
                 polygon_shapes.append([(p.x(), p.y()) for p in points])
 
         union_shape = shape.copy()
+        # The union is rebuilt from outer rings only.
+        union_shape.holes = []
 
         if len(rectangle_shapes) > 0:
             min_x = min([bbox[0] for bbox in rectangle_shapes])
@@ -3553,6 +3628,48 @@ class LabelingWidget(LabelDialog):
         if self.no_shape():
             for action in self.actions.on_shapes_present:
                 action.setEnabled(False)
+
+    def subtract_selection(self):
+        """Cut the last selected shape out of every polygon selected before it.
+
+        Each cut polygon is replaced, at its place in the layer order, by the parts left outside the cutter or inside its holes; they keep its label and attributes and may have holes themselves. The cutter is unchanged, and the whole operation is one undo step.
+        """
+        selected = list(self.canvas.selected_shapes)
+        if not _can_subtract_shapes(selected):
+            return
+        cutter = _shape_geometry(selected[-1])
+        if cutter is None:
+            return
+        replaced = {}
+        for target in selected[:-1]:
+            geometry = _shape_geometry(target)
+            if geometry is None or geometry.intersection(cutter).area <= 0:
+                continue
+            pieces = []
+            for outer, holes in subtract_geometry(geometry, cutter):
+                piece = target.copy()
+                piece.selected = False
+                piece.points = [QtCore.QPointF(x, y) for x, y in outer]
+                piece.holes = [
+                    [QtCore.QPointF(x, y) for x, y in ring] for ring in holes
+                ]
+                piece.close()
+                pieces.append(piece)
+            replaced[target] = pieces
+        if not replaced:
+            return
+
+        shapes = []
+        for shape in self.canvas.shapes:
+            shapes.extend(replaced.get(shape, [shape]))
+        # Rebuild the list like undo does: removing single rows emits itemDropped, which reloads the canvas from the list mid-update.
+        self.label_list.clear()
+        self.load_shapes(shapes, update_last_label=False)
+        self.set_dirty()
+        new_shapes = [
+            piece for pieces in replaced.values() for piece in pieces
+        ]
+        self.canvas.select_shapes(new_shapes or [selected[-1]])
 
     # Trainer
     def start_training(self, mode):
@@ -3951,6 +4068,7 @@ class LabelingWidget(LabelDialog):
         else:
             self.hide_attributes_panel()
             self.actions.union_selection.setEnabled(False)
+            self.actions.subtract_selection.setEnabled(False)
             create_actions = {
                 "polygon": self.actions.create_mode,
                 "rectangle": self.actions.create_rectangle_mode,
@@ -4068,6 +4186,10 @@ class LabelingWidget(LabelDialog):
         active = self.canvas.brush_tool if enabled else None
         for tool, tool_action in self._brush_tool_actions().items():
             tool_action.setChecked(tool == active)
+        self.actions.edit_keep_holes.setEnabled(enabled)
+        self.actions.edit_keep_holes.setChecked(
+            enabled and self.canvas.brush_keep_holes
+        )
         self.label_list.setEnabled(not enabled)
 
     def update_file_menu(self):
@@ -5107,6 +5229,9 @@ class LabelingWidget(LabelDialog):
         self.actions.edit_brush_mode.setEnabled(can_brush_edit)
         self.actions.edit_by_rectangle_mode.setEnabled(can_brush_edit)
         self.actions.edit_by_polygon_mode.setEnabled(can_brush_edit)
+        self.actions.subtract_selection.setEnabled(
+            _can_subtract_shapes(selected_shapes)
+        )
         self.actions.union_selection.setEnabled(
             not has_locked
             and not all(value > 0 for value in allow_merge_shape_type.values())
@@ -5963,6 +6088,12 @@ class LabelingWidget(LabelDialog):
         self._config[key] = value
         assert hasattr(self.canvas, key), f"Canvas has no attribute {key}"
         setattr(self.canvas, key, value)
+        self.canvas.update()
+
+    def set_hide_shape_tags(self, hidden):
+        """Hide all shape tags for this session without changing the
+        individual show_* settings."""
+        self.canvas.hide_shape_tags = bool(hidden)
         self.canvas.update()
 
     def open_settings_dialog(self, _checked=False, field_key=None):

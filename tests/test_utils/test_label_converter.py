@@ -282,6 +282,40 @@ class TestLabelConverterYoloExport(unittest.TestCase):
 
         self.assertEqual(output, "0 0.0 0.0 0.99 0.0 0.99 0.98\n")
 
+    def test_seg_export_stitches_holes_into_one_ring(self):
+        output = self._export(
+            "seg",
+            {
+                "label": "person",
+                "shape_type": "polygon",
+                "points": [[10, 5], [90, 5], [90, 45], [10, 45]],
+                "holes": [[[40, 15], [60, 15], [60, 35], [40, 35]]],
+            },
+        )
+
+        lines = output.splitlines()
+        self.assertEqual(len(lines), 1)
+        coords = np.array(lines[0].split()[1:], dtype=np.float64)
+        ring = (coords.reshape(-1, 2) * [100, 50]).round().astype(np.int32)
+        mask = np.zeros((50, 100), dtype=np.uint8)
+        cv2.fillPoly(mask, [ring], 1)
+        self.assertEqual(mask[25, 50], 0)
+        self.assertEqual(mask[25, 20], 1)
+        self.assertEqual(mask[25, 80], 1)
+
+    def test_stitch_holes_reverses_same_direction_hole(self):
+        outer = [[0, 0], [10, 0], [10, 10], [0, 10]]
+        hole = [[3, 3], [6, 3], [6, 6], [3, 6]]
+
+        ring = LabelConverter.stitch_holes(outer, [hole])
+
+        self.assertEqual(len(ring), len(outer) + len(hole) + 2)
+        mask = np.zeros((12, 12), dtype=np.uint8)
+        pts = np.array(ring, dtype=np.int32)
+        cv2.fillPoly(mask, [pts], 1)
+        self.assertEqual(mask[5, 5], 0)
+        self.assertEqual(LabelConverter.stitch_holes(outer, None), outer)
+
 
 class TestLabelConverterMaskExport(unittest.TestCase):
     def setUp(self):
@@ -320,6 +354,35 @@ class TestLabelConverterMaskExport(unittest.TestCase):
         output_file = os.path.join(self.temp_dir.name, "mask.png")
         self.converter.custom_to_mask(label_file, output_file, mapping_table)
         return output_file
+
+    def test_custom_to_mask_leaves_holes_empty(self):
+        label_file = os.path.join(self.temp_dir.name, "holes.json")
+        with open(label_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "imagePath": "image.jpg",
+                    "imageWidth": 20,
+                    "imageHeight": 20,
+                    "shapes": [
+                        {
+                            "label": "cat",
+                            "shape_type": "polygon",
+                            "points": [[2, 2], [17, 2], [17, 17], [2, 17]],
+                            "holes": [[[7, 7], [12, 7], [12, 12], [7, 12]]],
+                        }
+                    ],
+                },
+                f,
+            )
+        output_file = os.path.join(self.temp_dir.name, "holes.png")
+
+        self.converter.custom_to_mask(
+            label_file, output_file, self.mapping_table
+        )
+
+        mask = cv2.imread(output_file, cv2.IMREAD_UNCHANGED)
+        self.assertEqual(mask[9, 9], 0)
+        self.assertEqual(mask[4, 4], 1)
 
     def test_custom_to_mask_writes_blank_mask_for_empty_labels(self):
         label_file = self._write_label_file([])

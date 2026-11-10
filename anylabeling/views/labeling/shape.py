@@ -45,6 +45,7 @@ class Shape:
         "attributes",
         "kie_linking",
         "locked",
+        "holes",
     ]
 
     # The following class variables influence the drawing of all shape objects.
@@ -90,6 +91,8 @@ class Shape:
         self.difficult = difficult
         self.kie_linking = kie_linking
         self.points = []
+        # Inner rings of a polygon, each a list of QPointF; ``points`` stays the outer ring.
+        self.holes = []
         self.fill = False
         self.hovered = False
         self.selected = False
@@ -148,6 +151,10 @@ class Shape:
         }
         if self.shape_type == "rotation":
             dictData["direction"] = self.direction
+        if self.holes:
+            dictData["holes"] = [
+                [(p.x(), p.y()) for p in ring] for ring in self.holes
+            ]
         if self.locked:
             dictData["locked"] = True
         dictData = {
@@ -164,6 +171,14 @@ class Shape:
         self.description = data.get("description", "")
         self.difficult = data.get("difficult", False)
         self.shape_type = data.get("shape_type", "polygon")
+        self.holes = (
+            [
+                [QtCore.QPointF(p[0], p[1]) for p in ring]
+                for ring in data.get("holes") or []
+            ]
+            if self.shape_type == "polygon"
+            else []
+        )
         self.flags = data.get("flags", {})
         self.attributes = data.get("attributes", {})
         kie_linking = data.get("kie_linking", [])
@@ -579,6 +594,7 @@ class Shape:
                         self.draw_vertex(vrtx_path, i)
                 if self.is_closed():
                     line_path.lineTo(self.points[0])
+                self._add_hole_subpaths(line_path)
 
             painter.drawPath(line_path)
             painter.drawPath(vrtx_path)
@@ -790,7 +806,22 @@ class Shape:
             path = QtGui.QPainterPath(self.points[0])
             for p in self.points[1:]:
                 path.lineTo(p)
+            if self.holes:
+                path.closeSubpath()
+                self._add_hole_subpaths(path)
         return path
+
+    def _add_hole_subpaths(self, path):
+        """Append polygon holes as closed subpaths; the default odd-even fill rule leaves them empty."""
+        if self.shape_type != "polygon":
+            return
+        for ring in self.holes:
+            if len(ring) < 3:
+                continue
+            path.moveTo(ring[0])
+            for p in ring[1:]:
+                path.lineTo(p)
+            path.closeSubpath()
 
     def bounding_rect(self):
         """Return bounding rectangle of the shape"""
@@ -799,6 +830,7 @@ class Shape:
     def move_by(self, offset):
         """Move all points by an offset"""
         self.points = [p + offset for p in self.points]
+        self.holes = [[p + offset for p in ring] for ring in self.holes]
 
     def move_vertex_by(self, i, offset):
         """Move a specific vertex by an offset"""

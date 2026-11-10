@@ -21,6 +21,7 @@ except Exception:
 
 
 from anylabeling import configs as anylabeling_configs
+from anylabeling.config import MULTI_SHORTCUT_KEYS
 
 SETTINGS_TRANSLATION_CONTEXT = "SettingsDialog"
 
@@ -1413,6 +1414,7 @@ def _shortcut_category_map() -> dict[str, tuple[str, ...]]:
             "edit_brush_mode",
             "edit_by_polygon",
             "edit_by_rectangle",
+            "edit_keep_holes",
             "edit_label",
             "edit_polygon",
             "group_selected_shapes",
@@ -1426,6 +1428,7 @@ def _shortcut_category_map() -> dict[str, tuple[str, ...]]:
             "undo",
             "undo_last_point",
             "union_selected_shapes",
+            "subtract_selected_shapes",
         ),
         "View": (
             "fit_width",
@@ -1437,6 +1440,7 @@ def _shortcut_category_map() -> dict[str, tuple[str, ...]]:
             "show_texts",
             "toggle_image_tags",
             "toggle_equalize",
+            "toggle_shape_tags",
             "toggle_auto_use_last_gid",
             "toggle_auto_use_last_label",
             "toggle_compare_view",
@@ -1461,7 +1465,9 @@ def _shortcut_fields() -> list[SettingField]:
                 continue
             consumed.add(short_key)
             control = (
-                "multi_shortcut" if short_key == "zoom_in" else "shortcut"
+                "multi_shortcut"
+                if short_key in MULTI_SHORTCUT_KEYS
+                else "shortcut"
             )
             fields.append(
                 SettingField(

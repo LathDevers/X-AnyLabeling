@@ -30,6 +30,7 @@ class TestLabelWidgetBrushMode(unittest.TestCase):
             "edit_by_rectangle_mode",
             "edit_by_polygon_mode",
             "union_selection",
+            "subtract_selection",
         ]
         return SimpleNamespace(
             canvas=SimpleNamespace(
@@ -54,10 +55,14 @@ class TestLabelWidgetBrushMode(unittest.TestCase):
             "polygon": Mock(),
         }
         label_list = Mock()
+        keep_holes = Mock()
         widget = SimpleNamespace(
-            canvas=SimpleNamespace(brush_tool="rectangle"),
+            canvas=SimpleNamespace(
+                brush_tool="rectangle", brush_keep_holes=True
+            ),
             _brush_tool_actions=lambda: tool_actions,
             label_list=label_list,
+            actions=SimpleNamespace(edit_keep_holes=keep_holes),
         )
 
         LabelingWidget.on_brush_mode_changed(widget, True)
@@ -66,6 +71,8 @@ class TestLabelWidgetBrushMode(unittest.TestCase):
         tool_actions["brush"].setChecked.assert_called_once_with(False)
         tool_actions["polygon"].setChecked.assert_called_once_with(False)
         label_list.setEnabled.assert_called_once_with(False)
+        keep_holes.setEnabled.assert_called_once_with(True)
+        keep_holes.setChecked.assert_called_once_with(True)
 
     def test_active_brush_mode_rejects_selection_change(self):
         target = object()
@@ -187,6 +194,7 @@ class TestLabelWidgetBrushMode(unittest.TestCase):
             "edit_mode",
             "edit_brush_mode",
             "union_selection",
+            "subtract_selection",
         ]
         actions = SimpleNamespace(**{name: Mock() for name in action_names})
         actions.edit_brush_mode.isChecked.return_value = False

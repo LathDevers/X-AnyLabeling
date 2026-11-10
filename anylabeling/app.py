@@ -398,6 +398,11 @@ def main():
             )
 
     app = QtWidgets.QApplication(sys.argv)
+    # The macOS platform theme hides shortcuts in popup menus by default; show them trailing in every context menu
+    QtCore.QCoreApplication.setAttribute(
+        QtCore.Qt.ApplicationAttribute.AA_DontShowShortcutsInContextMenus,
+        False,
+    )
     apply_application_font(config.get("font_family"))
     init_theme(config.get("theme", "light"))
     _dark_palette = get_dark_palette()

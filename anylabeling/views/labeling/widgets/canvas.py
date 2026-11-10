@@ -79,6 +79,7 @@ class Canvas(
     # Emitted when brush-edit mode is toggled on/off (keeps the UI in sync).
     brush_mode_changed = QtCore.pyqtSignal(bool)
     brush_history_changed = QtCore.pyqtSignal(bool)
+    brush_keep_holes_changed = QtCore.pyqtSignal(bool)
 
     CREATE, EDIT = 0, 1
 
@@ -210,6 +211,11 @@ class Canvas(
         self.show_degrees = False
         self.show_attributes = True
         self.show_linking = True
+        # Hide every shape tag (texts, labels, scores, attributes, degrees)
+        # without touching the individual show_* settings. The menu toggle
+        # sets hide_shape_tags; holding H sets _shape_tags_peek_hidden.
+        self.hide_shape_tags = False
+        self._shape_tags_peek_hidden = False
 
         # Set cross line options.
         self.cross_line_show = True
@@ -269,6 +275,8 @@ class Canvas(
         # tools fill (or with Ctrl, cut) a drawn shape into the same mask.
         self.brush_tool = "brush"
         self._region_points = []
+        # Per-edit: keep holes in the target instead of filling them on each stroke.
+        self.brush_keep_holes = False
         self._brush_target_shape = None
         self._brush_original_shape = None
         self._prev_brush_pos = None
@@ -564,7 +572,17 @@ class Canvas(
     def focusOutEvent(self, _):
         """Window out of focus event"""
         self._clear_space_pan_state()
+        self._set_shape_tags_peek_hidden(False)
         self.restore_cursor()
+
+    def shape_tags_visible(self):
+        """Whether shape tags may be drawn at all"""
+        return not (self.hide_shape_tags or self._shape_tags_peek_hidden)
+
+    def _set_shape_tags_peek_hidden(self, hidden):
+        if self._shape_tags_peek_hidden != hidden:
+            self._shape_tags_peek_hidden = hidden
+            self.update()
 
     def is_visible(self, shape):
         """Check if a shape is visible"""
@@ -860,11 +878,14 @@ class Canvas(
         return mask
 
     @staticmethod
-    def _mask_to_polylines(mask: np.ndarray) -> list:
+    def _mask_to_polylines(
+        mask: np.ndarray, include_holes: bool = False
+    ) -> list:
         """Extract a mask's external contours as polylines.
 
         Args:
             mask: A 2D ``uint8`` mask whose non-zero pixels are foreground.
+            include_holes: Also return the contours of holes, so an odd-even filled path renders them empty.
 
         Returns:
             A list of polylines, each a list of ``(x, y)`` integer tuples.
@@ -877,7 +898,9 @@ class Canvas(
         if mask.ndim != 2:
             mask = mask.squeeze()
         contours, _ = cv2.findContours(
-            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            mask,
+            cv2.RETR_LIST if include_holes else cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
         )
         polylines = []
         for cnt in contours:
@@ -965,6 +988,14 @@ class Canvas(
                 for point in shape.points
             ]
             shape.mask = self._polygon_to_mask(points, (h, w))
+            for ring in shape.holes:
+                hole = np.array(
+                    [(int(round(p.x())), int(round(p.y()))) for p in ring],
+                    dtype=np.int32,
+                ).reshape((-1, 1, 2))
+                cv2.fillPoly(shape.mask, [hole], 0)
+                # Hole contours run through foreground pixels, so redraw the rim or every round trip widens the hole by a pixel.
+                cv2.polylines(shape.mask, [hole], True, 255)
             shape._brush_mask_version = 0
         shape._brush_using_mask = True
 
@@ -973,8 +1004,7 @@ class Canvas(
     ) -> bool:
         """Rewrite ``shape.points`` from its mask's largest component.
 
-        The largest external contour is simplified and stored as the new
-        polygon. Donut holes are not supported and are discarded.
+        The largest external contour is simplified and stored as the new polygon. With ``brush_keep_holes`` the component's holes are kept as ``shape.holes``; otherwise they are filled.
 
         Args:
             shape: The brush-edited shape whose mask is converted back
@@ -986,23 +1016,26 @@ class Canvas(
         """
         if shape is None or getattr(shape, "mask", None) is None:
             return False
-        polylines = self._mask_to_polylines(shape.mask)
-        if not polylines:
-            shape.points = []
-            return False
-        best = None
+        if shape.mask.dtype != np.uint8:
+            shape.mask = (shape.mask > 0).astype(np.uint8) * 255
+        # RETR_CCOMP: top-level entries are outer boundaries, their children are holes.
+        contours, hierarchy = cv2.findContours(
+            shape.mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+        )
+        best_index = -1
         best_area = -1.0
-        for poly in polylines:
-            if len(poly) < 3:
+        for i, cnt in enumerate(contours):
+            if hierarchy[0][i][3] != -1 or len(cnt) < 3:
                 continue
-            area = float(cv2.contourArea(np.array(poly, dtype=np.int32)))
+            area = float(cv2.contourArea(cnt))
             if area > best_area:
                 best_area = area
-                best = poly
-        if best is None or len(best) < 3:
+                best_index = i
+        if best_index < 0:
             shape.points = []
+            shape.holes = []
             return False
-        cnt = np.array(best, dtype=np.int32).reshape((-1, 1, 2))
+        cnt = contours[best_index]
         epsilon = (
             self.brush_simplify_epsilon_px
             if simplify_epsilon_px is None
@@ -1010,16 +1043,68 @@ class Canvas(
         )
         outer = self._simplify_contour(cnt, epsilon)
         if len(outer) < 3:
-            outer = best
-        shape.mask.fill(0)
-        cv2.fillPoly(shape.mask, [cnt], 255)
+            outer = [(int(x), int(y)) for x, y in cnt.reshape(-1, 2)]
+        holes = []
+        if self.brush_keep_holes:
+            # Keep the component pixel-exact; refilling from contours would erode hole rims on every stroke.
+            _, labels = cv2.connectedComponents(
+                (shape.mask > 0).astype(np.uint8), connectivity=8
+            )
+            x, y = cnt[0][0]
+            shape.mask[...] = np.where(labels == labels[y, x], 255, 0)
+            for i, hole in enumerate(contours):
+                if hierarchy[0][i][3] != best_index or len(hole) < 3:
+                    continue
+                ring = self._simplify_contour(hole, epsilon)
+                if len(ring) >= 3:
+                    holes.append(ring)
+        else:
+            shape.mask.fill(0)
+            cv2.fillPoly(shape.mask, [cnt], 255)
         self._bump_brush_version(shape)
         shape.shape_type = "polygon"
         shape.points = [QtCore.QPointF(float(x), float(y)) for x, y in outer]
-        # Donut holes are not representable as a single polygon.
-        shape.other_data.pop("holes", None)
+        shape.holes = [
+            [QtCore.QPointF(float(x), float(y)) for x, y in ring]
+            for ring in holes
+        ]
         shape.close()
         return True
+
+    @staticmethod
+    def _mask_has_holes(mask: np.ndarray) -> bool:
+        """Return whether any foreground region of ``mask`` encloses background."""
+        _, hierarchy = cv2.findContours(
+            (mask > 0).astype(np.uint8),
+            cv2.RETR_CCOMP,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        return hierarchy is not None and bool((hierarchy[0][:, 3] != -1).any())
+
+    def set_brush_keep_holes(self, enabled: bool) -> None:
+        """Keep or fill holes in the shape being mask-edited.
+
+        Turning it off fills the target's holes right away as an undoable step, so the canvas shows what a commit would save.
+
+        Args:
+            enabled: ``True`` to keep holes for the rest of this edit.
+        """
+        self.brush_keep_holes = bool(enabled)
+        self.brush_keep_holes_changed.emit(self.brush_keep_holes)
+        target = self._brush_target_shape
+        if (
+            not self.is_brush_mode
+            or target is None
+            or getattr(target, "mask", None) is None
+        ):
+            return
+        self._update_shape_points_from_mask(target)
+        if self._brush_baseline_mask is not None:
+            self._brush_modified = not np.array_equal(
+                target.mask, self._brush_baseline_mask
+            )
+        self._push_brush_undo_state()
+        self.update()
 
     def _invalidate_brush_cache(self, shape: Shape) -> None:
         """Drop the cached overlay image for ``shape``.
@@ -1071,7 +1156,7 @@ class Canvas(
             mask = mask.squeeze()
 
         outline_path = self._polylines_to_painter_path(
-            self._mask_to_polylines(mask)
+            self._mask_to_polylines(mask, include_holes=self.brush_keep_holes)
         )
 
         self._brush_overlay_cache[shape] = (version, outline_path)
@@ -1084,6 +1169,10 @@ class Canvas(
             return
         shape.shape_type = original.shape_type
         shape.points = [QtCore.QPointF(point) for point in original.points]
+        shape.holes = [
+            [QtCore.QPointF(point) for point in ring]
+            for ring in original.holes
+        ]
         shape.direction = original.direction
         shape.center = original.center
         shape.other_data = copy.deepcopy(original.other_data)
@@ -1128,6 +1217,7 @@ class Canvas(
                     self.shapes_deleted.emit([target])
 
         self._brush_modified = False
+        self.brush_keep_holes = False
         self._brush_undo_stack = []
         self._brush_redo_stack = []
         self._brush_baseline_mask = None
@@ -1212,6 +1302,11 @@ class Canvas(
                 else None
             )
             self._prev_brush_pos = None
+            # A shape that already has holes keeps them unless the user turns this off.
+            self.brush_keep_holes = bool(
+                self._brush_target_shape is not None
+                and self._brush_target_shape.holes
+            )
             if self._brush_target_shape is not None:
                 self._ensure_brush_mask(self._brush_target_shape)
                 self._invalidate_brush_cache(self._brush_target_shape)
@@ -1281,6 +1376,10 @@ class Canvas(
         """
         shape = self._brush_target_shape
         shape.mask = mask.copy()
+        if not self.brush_keep_holes and self._mask_has_holes(shape.mask):
+            # Only keep-holes mode stores masks with holes, so this state was made with it on (e.g. undoing turning it off).
+            self.brush_keep_holes = True
+            self.brush_keep_holes_changed.emit(True)
         self._bump_brush_version(shape)
         self._update_shape_points_from_mask(shape)
         if self._brush_baseline_mask is not None:
@@ -4516,7 +4615,7 @@ class Canvas(
                     (shape.points[0].x() + shape.points[2].x()) / 2,
                     (shape.points[0].y() + shape.points[2].y()) / 2,
                 )
-                if self.show_degrees:
+                if self.show_degrees and self.shape_tags_visible():
                     degrees = math.degrees(shape.direction)
                     if abs(degrees - 360.0) < 0.1:
                         degrees = 0.0
@@ -4624,8 +4723,10 @@ class Canvas(
         # Restore full opacity so labels/scores/attributes stay readable.
         p.setOpacity(1.0)
 
+        tags_visible = self.shape_tags_visible()
+
         # Draw texts
-        if self.show_texts:
+        if self.show_texts and tags_visible:
             text_color = "#FFFFFF"
             background_color = "#007BFF"
             p.setFont(
@@ -4687,7 +4788,7 @@ class Canvas(
                     )
 
         # Draw labels
-        if self.show_labels:
+        if self.show_labels and tags_visible:
             label_transform = p.transform()
             p.save()
             p.resetTransform()
@@ -4828,7 +4929,7 @@ class Canvas(
             )
 
         # Draw attributes
-        if self.show_attributes:
+        if self.show_attributes and tags_visible:
             font_size = int(max(8.0, int(round(10.0 / Shape.scale))))
             font = QtGui.QFont("Arial", font_size, QtGui.QFont.Weight.Bold)
             p.setFont(font)
@@ -5565,6 +5666,14 @@ class Canvas(
                 self.override_cursor(CURSOR_GRAB)
             ev.accept()
             return
+        if (
+            key == QtCore.Qt.Key.Key_H
+            and modifiers == QtCore.Qt.KeyboardModifier.NoModifier
+        ):
+            if not ev.isAutoRepeat():
+                self._set_shape_tags_peek_hidden(True)
+            ev.accept()
+            return
         if self.is_brush_mode and self.editing():
             if self._brush_key_press(ev):
                 return
@@ -5636,6 +5745,10 @@ class Canvas(
             self._space_panning = False
             self._space_pan_prev_point = None
             self._restore_space_pan_cursor()
+            ev.accept()
+            return
+        if key == QtCore.Qt.Key.Key_H and not ev.isAutoRepeat():
+            self._set_shape_tags_peek_hidden(False)
             ev.accept()
             return
         if self.is_brush_mode and key == QtCore.Qt.Key.Key_Control:

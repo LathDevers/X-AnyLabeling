@@ -288,6 +288,42 @@ class LabelConverter:
         ]
 
     @staticmethod
+    def stitch_holes(outer, holes):
+        """Join polygon holes into the outer ring as one keyhole polygon.
+
+        Each hole is bridged to its nearest vertex on the ring built so far and walked in the opposite direction, so the result rasterizes with the holes empty under both fill rules. Formats with one ring per instance, such as YOLO-seg, can then carry holes; Ultralytics merges COCO segments the same way.
+
+        Args:
+            outer (list): Outer ring as ``[x, y]`` points.
+            holes (list): Inner rings, each a list of ``[x, y]`` points.
+
+        Returns:
+            list: The stitched ring as ``[x, y]`` points.
+        """
+
+        def signed_area(ring):
+            xs, ys = ring[:, 0], ring[:, 1]
+            return 0.5 * float(
+                np.dot(xs, np.roll(ys, -1)) - np.dot(ys, np.roll(xs, -1))
+            )
+
+        ring = np.asarray(outer, dtype=np.float64)
+        outer_sign = np.sign(signed_area(ring))
+        for hole in holes or []:
+            hole = np.asarray(hole, dtype=np.float64)
+            if len(hole) < 3:
+                continue
+            if np.sign(signed_area(hole)) == outer_sign:
+                hole = hole[::-1]
+            distances = ((ring[:, None, :] - hole[None, :, :]) ** 2).sum(
+                axis=2
+            )
+            i, j = np.unravel_index(np.argmin(distances), distances.shape)
+            loop = np.concatenate([hole[j:], hole[: j + 1]])
+            ring = np.concatenate([ring[: i + 1], loop, ring[i:]])
+        return ring.tolist()
+
+    @staticmethod
     def extract_bbox_answer(content):
         answer_matches = re.findall(
             r"<answer>(.*?)</answer>", content, re.DOTALL
@@ -1289,7 +1325,11 @@ class LabelConverter:
                     label = shape["label"]
                     points = np.array(
                         self.clamp_points(
-                            shape["points"], image_width, image_height
+                            self.stitch_holes(
+                                shape["points"], shape.get("holes")
+                            ),
+                            image_width,
+                            image_height,
                         )
                     )
                     if len(points) < 3:
@@ -1875,14 +1915,17 @@ class LabelConverter:
             points = self.clamp_points(
                 shape["points"], image_width, image_height
             )
-            polygon = []
-            for point in points:
-                x, y = point
-                polygon.append((int(x), int(y)))
+            rings = [points] + [
+                self.clamp_points(hole, image_width, image_height)
+                for hole in shape.get("holes") or []
+                if len(hole) >= 3
+            ]
             polygons.append(
                 {
                     "label": shape["label"],
-                    "polygon": polygon,
+                    "rings": [
+                        np.array(ring, dtype=np.int32) for ring in rings
+                    ],
                     "layer_index": layer_index,
                 }
             )
@@ -1915,12 +1958,11 @@ class LabelConverter:
             binary_mask = np.zeros(image_shape, dtype=np.uint8)
 
             for item in polygons:
-                label, polygon = item["label"], item["polygon"]
+                label = item["label"]
                 if label in mapping_color:
+                    # fillPoly fills odd-even, so the hole rings stay empty.
                     cv2.fillPoly(
-                        binary_mask,
-                        [np.array(polygon, dtype=np.int32)],
-                        mapping_color[label],
+                        binary_mask, item["rings"], mapping_color[label]
                     )
 
             cv2.imencode(".png", binary_mask)[1].tofile(output_file)
@@ -1932,13 +1974,10 @@ class LabelConverter:
             )
 
             for item in polygons:
-                label, polygon = item["label"], item["polygon"]
+                label = item["label"]
                 if label in mapping_color:
-                    color = mapping_color[label]
                     cv2.fillPoly(
-                        color_mask,
-                        [np.array(polygon, dtype=np.int32)],
-                        color,
+                        color_mask, item["rings"], mapping_color[label]
                     )
 
             cv2.imencode(".png", cv2.cvtColor(color_mask, cv2.COLOR_BGR2RGB))[
