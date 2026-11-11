@@ -5968,7 +5968,18 @@ class Canvas(
 
     # QT Overload
     def event(self, ev):
-        """Handle native trackpad gestures (macOS pinch-to-zoom)"""
+        """Handle native trackpad gestures (macOS pinch-to-zoom) and claim Delete for a selected relation"""
+        if (
+            ev.type() == QtCore.QEvent.Type.ShortcutOverride
+            and self.editing()
+            and self.show_labels
+            and self.show_linking
+            and self.selected_relation is not None
+            and ev.key() == QtCore.Qt.Key.Key_Delete
+            and ev.modifiers() == QtCore.Qt.KeyboardModifier.NoModifier
+        ):
+            ev.accept()
+            return True
         if ev.type() == QtCore.QEvent.Type.NativeGesture:
             if ev.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
                 # The gesture's own position() is unreliable on macOS; a pinch never moves the pointer, so anchor on the real cursor.
@@ -6092,6 +6103,17 @@ class Canvas(
             )
             self.split_position_changed.emit(self.split_position)
             self.update()
+            ev.accept()
+            return
+
+        # Trackpad two-finger scroll pans; zoom stays on pinch and Ctrl+scroll. Only gesture-driven scrolls carry a phase, so a classic mouse wheel still zooms.
+        if (
+            mods == QtCore.Qt.KeyboardModifier.NoModifier
+            and ev.phase() != Qt.ScrollPhase.NoScrollPhase
+            and not ev.pixelDelta().isNull()
+        ):
+            self.interaction_started.emit()
+            self.pan_request.emit(QtCore.QPointF(ev.pixelDelta()))
             ev.accept()
             return
 
@@ -6264,20 +6286,6 @@ class Canvas(
             if rotating_shape:
                 self.rotating_shape = True
                 self.repaint()
-
-    def event(self, ev):
-        if (
-            ev.type() == QtCore.QEvent.Type.ShortcutOverride
-            and self.editing()
-            and self.show_labels
-            and self.show_linking
-            and self.selected_relation is not None
-            and ev.key() == QtCore.Qt.Key.Key_Delete
-            and ev.modifiers() == QtCore.Qt.KeyboardModifier.NoModifier
-        ):
-            ev.accept()
-            return True
-        return super().event(ev)
 
     # QT Overload
     def keyPressEvent(self, ev):  # noqa: C901

@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PyQt6 import QtCore
+from PyQt6 import QtCore, QtGui
 
 from anylabeling.views.labeling.label_widget import LabelingWidget
 from tests.test_canvas.test_navigation import (  # noqa: F401
@@ -65,3 +65,69 @@ def test_pinch_after_pan_anchors_on_new_point_under_cursor(pinch_view):
     pinch(pinch_view, 1.02, point)
 
     assert_kept(image_position(pinch_view, point), after_pan)
+
+
+def wheel(view, phase, pixel, angle):
+    point = QtCore.QPointF(200, 150)
+    return QtGui.QWheelEvent(
+        point,
+        QtCore.QPointF(view.canvas.mapToGlobal(point.toPoint())),
+        pixel,
+        angle,
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        phase,
+        False,
+    )
+
+
+def test_trackpad_scroll_pans_instead_of_zooming(view):
+    scale = view.canvas.scale
+    offset = QtCore.QPointF(view.canvas.pan_offset)
+
+    view.canvas.wheelEvent(
+        wheel(
+            view,
+            QtCore.Qt.ScrollPhase.ScrollUpdate,
+            QtCore.QPoint(-30, 12),
+            QtCore.QPoint(-90, 36),
+        )
+    )
+
+    assert view.canvas.scale == scale
+    assert view.canvas.pan_offset == offset + QtCore.QPointF(-30, 12)
+
+
+def test_mouse_wheel_still_zooms(view):
+    requests = []
+    view.canvas.zoom_request.connect(lambda delta, pos: requests.append(delta))
+
+    view.canvas.wheelEvent(
+        wheel(
+            view,
+            QtCore.Qt.ScrollPhase.NoScrollPhase,
+            QtCore.QPoint(),
+            QtCore.QPoint(0, 120),
+        )
+    )
+
+    assert requests == [120]
+
+
+def test_native_pinch_gesture_reaches_zoom(pinch_view):
+    scale = pinch_view.canvas.scale
+    point = QtCore.QPointF(200, 150)
+    gesture = QtGui.QNativeGestureEvent(
+        QtCore.Qt.NativeGestureType.ZoomNativeGesture,
+        QtGui.QPointingDevice.primaryPointingDevice(),
+        2,
+        point,
+        point,
+        point,
+        0.1,
+        QtCore.QPointF(),
+    )
+
+    assert pinch_view.canvas.event(gesture)
+
+    assert pinch_view.canvas.scale == pytest.approx(scale * 1.1)
